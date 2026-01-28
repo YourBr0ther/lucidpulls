@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  lucidpulls:
+    build: .
+    container_name: lucidpulls
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # SQLite database persistence
+      - ./data:/app/data
+      # SSH keys for git operations (read-only)
+      - ~/.ssh:/home/lucidpulls/.ssh:ro
+      # Temporary directory for cloned repos
+      - /tmp/lucidpulls:/tmp/lucidpulls
+    environment:
+      - TZ=${TIMEZONE:-America/New_York}
+      - HOME=/home/lucidpulls
+    # Health check to ensure the service is running
+    healthcheck:
+      test: ["CMD", "python", "-c", "import src.config; print('healthy')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
