@@ -226,3 +226,14 @@ class PRCreator:
         except GithubException as e:
             logger.error(f"Failed to add comment to PR #{pr_number}: {e}")
             return False
+
+    def close(self) -> None:
+        """Close GitHub client connection."""
+        if hasattr(self, "github"):
+            self.github.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()

@@ -79,9 +79,26 @@ class ReviewScheduler:
 
         Returns:
             Tuple of (hour, minute).
+
+        Raises:
+            ValueError: If format is invalid.
         """
+        if not time_str or ":" not in time_str:
+            raise ValueError(f"Invalid time format '{time_str}', expected HH:MM")
+
         parts = time_str.split(":")
-        return int(parts[0]), int(parts[1])
+        if len(parts) != 2:
+            raise ValueError(f"Invalid time format '{time_str}', expected HH:MM")
+
+        try:
+            hour, minute = int(parts[0]), int(parts[1])
+        except ValueError:
+            raise ValueError(f"Invalid time format '{time_str}', expected numeric HH:MM")
+
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError(f"Time out of range: {time_str}")
+
+        return hour, minute
 
     def start(self) -> None:
         """Start the scheduler (blocking)."""
@@ -133,9 +150,33 @@ class DeadlineEnforcer:
         self.timezone = pytz.timezone(timezone)
 
     def _parse_time(self, time_str: str) -> tuple[int, int]:
-        """Parse time string."""
+        """Parse time string into hour and minute.
+
+        Args:
+            time_str: Time in HH:MM format.
+
+        Returns:
+            Tuple of (hour, minute).
+
+        Raises:
+            ValueError: If format is invalid.
+        """
+        if not time_str or ":" not in time_str:
+            raise ValueError(f"Invalid time format '{time_str}', expected HH:MM")
+
         parts = time_str.split(":")
-        return int(parts[0]), int(parts[1])
+        if len(parts) != 2:
+            raise ValueError(f"Invalid time format '{time_str}', expected HH:MM")
+
+        try:
+            hour, minute = int(parts[0]), int(parts[1])
+        except ValueError:
+            raise ValueError(f"Invalid time format '{time_str}', expected numeric HH:MM")
+
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError(f"Time out of range: {time_str}")
+
+        return hour, minute
 
     def is_past_deadline(self) -> bool:
         """Check if current time is past the deadline.
@@ -151,11 +192,20 @@ class DeadlineEnforcer:
             microsecond=0,
         )
 
-        # Handle case where deadline is early morning (after midnight)
-        if self.deadline_hour < 12:
-            # If we're in the evening, deadline is tomorrow
-            if now.hour >= 12:
-                return False
+        # If deadline time is earlier than now but we're checking for "tonight's" deadline,
+        # it means the deadline hasn't passed yet (it's tomorrow)
+        # Example: It's 11 PM, deadline is 2 AM -> deadline is tomorrow 2 AM
+        if deadline <= now and self.deadline_hour < 12 and now.hour >= 18:
+            # Deadline is meant for tomorrow
+            return False
+
+        # If deadline is in the past and it's morning, we're past deadline
+        if deadline <= now and now.hour < 12:
+            return True
+
+        # If deadline is in the future, we're not past it
+        if deadline > now:
+            return False
 
         return now >= deadline
 

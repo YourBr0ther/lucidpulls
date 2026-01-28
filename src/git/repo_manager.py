@@ -257,3 +257,14 @@ class RepoManager:
             logger.debug(f"Cleaned up branch: {branch_name}")
         except GitCommandError as e:
             logger.warning(f"Failed to cleanup branch {branch_name}: {e}")
+
+    def close(self) -> None:
+        """Close GitHub client connection."""
+        if hasattr(self, "github"):
+            self.github.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()

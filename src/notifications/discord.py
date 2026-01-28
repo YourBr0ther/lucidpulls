@@ -112,7 +112,17 @@ class DiscordNotifier(BaseNotifier):
         """Get channel name."""
         return "Discord"
 
-    def __del__(self):
-        """Clean up HTTP client."""
+    def close(self) -> None:
+        """Close the HTTP client."""
         if hasattr(self, "_client"):
             self._client.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def __del__(self):
+        """Clean up HTTP client."""
+        self.close()

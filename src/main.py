@@ -77,7 +77,7 @@ class LucidPulls:
         repos = self.settings.repo_list
         if not repos:
             logger.warning("No repositories configured")
-            self.history.complete_run(run.id, 0, 0, "No repositories configured")
+            self.history.complete_run(run.id, 0, 0)
             return
 
         logger.info(f"Processing {len(repos)} repositories")
@@ -121,6 +121,10 @@ class LucidPulls:
         Returns:
             True if a PR was created.
         """
+        if self._current_run_id is None:
+            logger.error(f"Cannot process {repo_name}: no active run")
+            return False
+
         logger.info(f"Processing {repo_name}")
 
         # Clone or pull the repository
@@ -258,9 +262,13 @@ class LucidPulls:
             logger.warning("No review runs found for report")
             return
 
-        # Only send if run completed today
-        today = datetime.now(pytz.timezone(self.settings.timezone)).date()
-        run_date = run.started_at.date()
+        # Convert UTC to local timezone for comparison
+        tz = pytz.timezone(self.settings.timezone)
+        today = datetime.now(tz).date()
+        # run.started_at is naive UTC, make it aware then convert to local
+        run_started_local = pytz.utc.localize(run.started_at).astimezone(tz)
+        run_date = run_started_local.date()
+
         if run_date != today:
             logger.info(f"Latest run was on {run_date}, skipping report for today")
             return

@@ -190,8 +190,11 @@ class CodeAnalyzer(BaseAnalyzer):
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse LLM response as JSON: {e}")
             return None
+        except (KeyError, TypeError) as e:
+            logger.error(f"Invalid LLM response structure: {e}")
+            return None
         except Exception as e:
-            logger.error(f"Error parsing LLM response: {e}")
+            logger.error(f"Unexpected error parsing LLM response ({type(e).__name__}): {e}")
             return None
 
     def _extract_json(self, text: str) -> Optional[str]:
@@ -317,7 +320,8 @@ class CodeAnalyzer(BaseAnalyzer):
             content = file_path.read_text(encoding="utf-8")
             ast.parse(content)
             return True
-        except SyntaxError:
+        except (SyntaxError, UnicodeDecodeError, OSError, MemoryError) as e:
+            logger.debug(f"Python syntax validation failed for {file_path}: {e}")
             return False
 
     def _validate_js_syntax(self, file_path: Path) -> bool:
