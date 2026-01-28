@@ -162,6 +162,21 @@ class TestTeamsNotifier:
         notifier = TeamsNotifier(webhook_url="")
         assert notifier.is_configured() is False
 
+    def test_is_configured_rejects_spoofed_domain(self):
+        """Test is_configured rejects URLs with Microsoft domain as substring."""
+        notifier = TeamsNotifier(webhook_url="https://evil.com/?redirect=microsoft.com")
+        assert notifier.is_configured() is False
+
+    def test_is_configured_rejects_non_microsoft_https(self):
+        """Test is_configured rejects non-Microsoft HTTPS URLs."""
+        notifier = TeamsNotifier(webhook_url="https://example.com/webhook")
+        assert notifier.is_configured() is False
+
+    def test_is_configured_accepts_subdomain(self):
+        """Test is_configured accepts valid Microsoft subdomains."""
+        notifier = TeamsNotifier(webhook_url="https://outlook.office.com/webhook/123")
+        assert notifier.is_configured() is True
+
     @patch.object(httpx.Client, "post")
     def test_send_report_success(self, mock_post):
         """Test successful report sending."""

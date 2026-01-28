@@ -5,13 +5,13 @@ from typing import Optional
 
 import httpx
 
-from src.llm.base import BaseLLM, LLMResponse
+from src.llm.base import BaseHTTPLLM, LLMResponse, DEFAULT_TIMEOUT, DEFAULT_MAX_TOKENS
 from src.utils import retry
 
 logger = logging.getLogger("lucidpulls.llm.azure")
 
 
-class AzureLLM(BaseLLM):
+class AzureLLM(BaseHTTPLLM):
     """Azure AI Studios (OpenAI) client."""
 
     def __init__(
@@ -29,11 +29,11 @@ class AzureLLM(BaseLLM):
             deployment_name: Name of the deployed model.
             api_version: API version to use.
         """
+        super().__init__(timeout=DEFAULT_TIMEOUT)
         self.endpoint = endpoint.rstrip("/")
         self.api_key = api_key
         self.deployment_name = deployment_name
         self.api_version = api_version
-        self._client = httpx.Client(timeout=300.0)
 
     def generate(self, prompt: str, system_prompt: Optional[str] = None) -> LLMResponse:
         """Generate a response using Azure OpenAI.
@@ -67,7 +67,7 @@ class AzureLLM(BaseLLM):
         payload = {
             "messages": messages,
             "temperature": 0.1,  # Low temperature for consistent code fixes
-            "max_tokens": 4096,
+            "max_tokens": DEFAULT_MAX_TOKENS,
         }
 
         headers = {
@@ -80,7 +80,12 @@ class AzureLLM(BaseLLM):
         response = self._client.post(url, json=payload, headers=headers)
         response.raise_for_status()
 
-        data = response.json()
+        try:
+            data = response.json()
+        except ValueError:
+            logger.error("Azure returned invalid JSON response")
+            return LLMResponse(content="", model=self.deployment_name)
+
         choices = data.get("choices", [])
 
         if not choices:
@@ -137,18 +142,3 @@ class AzureLLM(BaseLLM):
     def provider_name(self) -> str:
         """Get provider name."""
         return "Azure AI Studios"
-
-    def close(self) -> None:
-        """Close the HTTP client."""
-        if hasattr(self, "_client"):
-            self._client.close()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
-
-    def __del__(self):
-        """Clean up HTTP client."""
-        self.close()

@@ -126,9 +126,18 @@ class TeamsNotifier(BaseNotifier):
         """Check if Teams webhook is configured.
 
         Returns:
-            True if webhook URL is set.
+            True if webhook URL is set and points to a valid Microsoft domain.
         """
-        return bool(self.webhook_url and "webhook" in self.webhook_url.lower())
+        if not self.webhook_url or not self.webhook_url.startswith("https://"):
+            return False
+
+        try:
+            from urllib.parse import urlparse
+            hostname = urlparse(self.webhook_url).hostname or ""
+            valid_domains = (".office.com", ".office365.com", ".microsoft.com")
+            return any(hostname == d.lstrip(".") or hostname.endswith(d) for d in valid_domains)
+        except Exception:
+            return False
 
     @property
     def channel_name(self) -> str:

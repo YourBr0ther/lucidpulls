@@ -5,13 +5,13 @@ from typing import Optional
 
 import httpx
 
-from src.llm.base import BaseLLM, LLMResponse
+from src.llm.base import BaseHTTPLLM, LLMResponse, DEFAULT_TIMEOUT, DEFAULT_MAX_TOKENS
 from src.utils import retry
 
 logger = logging.getLogger("lucidpulls.llm.nanogpt")
 
 
-class NanoGPTLLM(BaseLLM):
+class NanoGPTLLM(BaseHTTPLLM):
     """NanoGPT API client."""
 
     BASE_URL = "https://nano-gpt.com/api"
@@ -23,9 +23,9 @@ class NanoGPTLLM(BaseLLM):
             api_key: NanoGPT API key.
             model: Model name to use.
         """
+        super().__init__(timeout=DEFAULT_TIMEOUT)
         self.api_key = api_key
         self.model = model
-        self._client = httpx.Client(timeout=300.0)
 
     def generate(self, prompt: str, system_prompt: Optional[str] = None) -> LLMResponse:
         """Generate a response using NanoGPT.
@@ -57,6 +57,7 @@ class NanoGPTLLM(BaseLLM):
             "model": self.model,
             "messages": messages,
             "temperature": 0.1,
+            "max_tokens": DEFAULT_MAX_TOKENS,
         }
 
         headers = {
@@ -69,7 +70,12 @@ class NanoGPTLLM(BaseLLM):
         response = self._client.post(url, json=payload, headers=headers)
         response.raise_for_status()
 
-        data = response.json()
+        try:
+            data = response.json()
+        except ValueError:
+            logger.error("NanoGPT returned invalid JSON response")
+            return LLMResponse(content="", model=self.model)
+
         choices = data.get("choices", [])
 
         if not choices:
@@ -113,18 +119,3 @@ class NanoGPTLLM(BaseLLM):
     def provider_name(self) -> str:
         """Get provider name."""
         return "NanoGPT"
-
-    def close(self) -> None:
-        """Close the HTTP client."""
-        if hasattr(self, "_client"):
-            self._client.close()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
-
-    def __del__(self):
-        """Clean up HTTP client."""
-        self.close()

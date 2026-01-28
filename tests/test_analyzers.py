@@ -207,6 +207,114 @@ class TestCodeAnalyzer:
             assert "value = x.data if x else None" in new_content
 
 
+class TestCodeAnalyzerApplyFixSecurity:
+    """Security tests for CodeAnalyzer.apply_fix."""
+
+    def test_apply_fix_prevents_absolute_path_traversal(self):
+        """Test that absolute path traversal is blocked."""
+        analyzer = CodeAnalyzer(Mock())
+        fix = FixSuggestion(
+            file_path="/etc/passwd",
+            bug_description="Bug",
+            fix_description="Fix",
+            original_code="old",
+            fixed_code="new",
+            pr_title="Title",
+            pr_body="Body",
+            confidence="high",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = analyzer.apply_fix(Path(tmpdir), fix)
+            assert result is False
+
+    def test_apply_fix_prevents_relative_path_traversal(self):
+        """Test that relative path traversal via .. is blocked."""
+        analyzer = CodeAnalyzer(Mock())
+        fix = FixSuggestion(
+            file_path="../../etc/passwd",
+            bug_description="Bug",
+            fix_description="Fix",
+            original_code="old",
+            fixed_code="new",
+            pr_title="Title",
+            pr_body="Body",
+            confidence="high",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = analyzer.apply_fix(Path(tmpdir), fix)
+            assert result is False
+
+    def test_apply_fix_rejects_multiple_matches(self):
+        """Test that ambiguous fixes with multiple matches are rejected."""
+        analyzer = CodeAnalyzer(Mock())
+        fix = FixSuggestion(
+            file_path="test.py",
+            bug_description="Bug",
+            fix_description="Fix",
+            original_code="x = 1",
+            fixed_code="x = 2",
+            pr_title="Title",
+            pr_body="Body",
+            confidence="high",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_file = Path(tmpdir) / "test.py"
+            test_file.write_text("x = 1\ny = 2\nx = 1\n")
+
+            result = analyzer.apply_fix(Path(tmpdir), fix)
+            assert result is False
+            # Verify file was NOT modified
+            assert test_file.read_text() == "x = 1\ny = 2\nx = 1\n"
+
+    def test_apply_fix_reverts_on_invalid_python_syntax(self):
+        """Test that fix is reverted when it produces invalid Python."""
+        analyzer = CodeAnalyzer(Mock())
+        fix = FixSuggestion(
+            file_path="test.py",
+            bug_description="Bug",
+            fix_description="Fix",
+            original_code="x = 1",
+            fixed_code="x = (",  # Invalid syntax
+            pr_title="Title",
+            pr_body="Body",
+            confidence="high",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_file = Path(tmpdir) / "test.py"
+            original = "x = 1\n"
+            test_file.write_text(original)
+
+            result = analyzer.apply_fix(Path(tmpdir), fix)
+            assert result is False
+            # Verify file was reverted
+            assert test_file.read_text() == original
+
+    def test_apply_fix_original_code_not_found(self):
+        """Test behavior when original code doesn't match."""
+        analyzer = CodeAnalyzer(Mock())
+        fix = FixSuggestion(
+            file_path="test.py",
+            bug_description="Bug",
+            fix_description="Fix",
+            original_code="not_in_file",
+            fixed_code="new_code",
+            pr_title="Title",
+            pr_body="Body",
+            confidence="high",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_file = Path(tmpdir) / "test.py"
+            test_file.write_text("some other content\n")
+
+            result = analyzer.apply_fix(Path(tmpdir), fix)
+            assert result is False
+
+
 class TestIssueAnalyzer:
     """Tests for IssueAnalyzer."""
 
@@ -267,8 +375,8 @@ class TestIssueAnalyzer:
         """Test scoring based on fixable keywords."""
         analyzer = IssueAnalyzer()
 
-        issue1 = {"number": 1, "title": "Random issue", "body": "Something", "labels": []}
-        issue2 = {"number": 2, "title": "Null pointer", "body": "NPE crash", "labels": []}
+        issue1 = {"number": 1, "title": "Random issue", "body": "Something that is unrelated to any known bug pattern in the codebase", "labels": []}
+        issue2 = {"number": 2, "title": "Null pointer", "body": "NPE crash when accessing the user object after logout from the system", "labels": []}
 
         score1 = analyzer._score_issue(issue1)
         score2 = analyzer._score_issue(issue2)

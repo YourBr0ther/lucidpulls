@@ -1,16 +1,11 @@
-# Core dependencies
-python-dotenv>=1.0.0
-PyGithub>=2.1.0
-GitPython>=3.1.40
-APScheduler>=3.10.4
-SQLAlchemy>=2.0.0
-httpx>=0.25.0
-pydantic>=2.5.0
-pydantic-settings>=2.1.0
-
-# Development dependencies
-pytest>=7.4.0
-pytest-cov>=4.1.0
-pytest-asyncio>=0.21.0
-ruff>=0.1.0
-mypy>=1.7.0
+# Core dependencies - pinned for production stability (2026-01-28)
+# All versions verified compatible with Python 3.11+
+python-dotenv==1.2.1
+PyGithub==2.8.1
+GitPython==3.1.46
+APScheduler==3.11.2            # Stay on 3.x; 4.x has breaking API changes
+SQLAlchemy==2.0.46
+httpx==0.28.1
+pydantic==2.12.5
+pydantic-settings==2.12.0      # Requires pydantic>=2.7.0
+pytz==2025.2

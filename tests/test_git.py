@@ -45,7 +45,7 @@ class TestRepoManager:
         mock_github.return_value.get_repo.return_value = mock_gh_repo
 
         # Mock Git operations
-        mock_repo = Mock()
+        mock_repo = MagicMock()
         mock_repo_class.clone_from.return_value = mock_repo
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -145,6 +145,87 @@ class TestRepoManager:
         mock_origin.push.assert_called_with("feature-branch", set_upstream=True)
 
 
+class TestRepoManagerSecurity:
+    """Security tests for RepoManager."""
+
+    @patch("src.git.repo_manager.Github")
+    def test_commit_changes_blocks_path_traversal(self, mock_github):
+        """Test that commit_changes rejects path traversal attempts."""
+        mock_repo = Mock()
+
+        repo_info = RepoInfo(
+            name="repo",
+            owner="owner",
+            full_name="owner/repo",
+            local_path=Path("/tmp/test/owner/repo"),
+            default_branch="main",
+            repo=mock_repo,
+        )
+
+        manager = RepoManager(
+            github_token="test-token",
+            username="testuser",
+            email="test@example.com",
+        )
+
+        result = manager.commit_changes(repo_info, "../../etc/passwd", "malicious commit")
+
+        assert result is False
+        mock_repo.git.add.assert_not_called()
+
+    @patch("src.git.repo_manager.Github")
+    def test_commit_changes_allows_valid_path(self, mock_github):
+        """Test that commit_changes allows valid relative paths."""
+        mock_repo = Mock()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            # Create the file so resolve() works
+            test_file = repo_path / "src" / "main.py"
+            test_file.parent.mkdir(parents=True, exist_ok=True)
+            test_file.write_text("content")
+
+            repo_info = RepoInfo(
+                name="repo",
+                owner="owner",
+                full_name="owner/repo",
+                local_path=repo_path,
+                default_branch="main",
+                repo=mock_repo,
+            )
+
+            manager = RepoManager(
+                github_token="test-token",
+                username="testuser",
+                email="test@example.com",
+            )
+
+            result = manager.commit_changes(repo_info, "src/main.py", "valid commit")
+
+            assert result is True
+            mock_repo.git.add.assert_called_with("src/main.py")
+
+    @patch("src.git.repo_manager.Github")
+    @patch("src.git.repo_manager.Repo")
+    def test_pull_repo_handles_detached_head(self, mock_repo_class, mock_github):
+        """Test _pull_repo handles detached HEAD state."""
+        mock_repo = MagicMock()
+        # Simulate detached HEAD: active_branch raises TypeError
+        type(mock_repo).active_branch = property(lambda self: (_ for _ in ()).throw(TypeError("HEAD is detached")))
+        mock_repo_class.return_value = mock_repo
+
+        manager = RepoManager(
+            github_token="test-token",
+            username="testuser",
+            email="test@example.com",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = manager._pull_repo(Path(tmpdir), "main")
+            # Should not crash; should checkout default branch
+            mock_repo.git.checkout.assert_called_with("main")
+
+
 class TestPRCreator:
     """Tests for PRCreator."""
 
@@ -209,7 +290,9 @@ class TestPRCreator:
         mock_issue.number = 1
         mock_issue.title = "Bug"
         mock_issue.body = "Description"
-        mock_issue.labels = [Mock(name="bug")]
+        mock_label = Mock()
+        mock_label.name = "bug"
+        mock_issue.labels = [mock_label]
         mock_issue.html_url = "https://github.com/owner/repo/issues/1"
         mock_issue.created_at = None
 
@@ -237,6 +320,44 @@ class TestPRCreator:
 
         assert result is True
         mock_pr.create_issue_comment.assert_called_with("Comment text")
+
+
+class TestHasOpenLucidpullsPR:
+    """Tests for has_open_lucidpulls_pr."""
+
+    @patch("src.git.pr_creator.Github")
+    def test_returns_true_when_pr_exists(self, mock_github):
+        """Test returns True when a LucidPulls PR exists."""
+        mock_pr = Mock()
+        mock_pr.head.ref = "lucidpulls/20240115-fix"
+        mock_pr.number = 42
+        mock_repo = Mock()
+        mock_repo.get_pulls.return_value = [mock_pr]
+        mock_github.return_value.get_repo.return_value = mock_repo
+
+        creator = PRCreator(github_token="test-token")
+        assert creator.has_open_lucidpulls_pr("owner/repo") is True
+
+    @patch("src.git.pr_creator.Github")
+    def test_returns_false_when_no_pr(self, mock_github):
+        """Test returns False when no LucidPulls PR exists."""
+        mock_pr = Mock()
+        mock_pr.head.ref = "feature/other-branch"
+        mock_repo = Mock()
+        mock_repo.get_pulls.return_value = [mock_pr]
+        mock_github.return_value.get_repo.return_value = mock_repo
+
+        creator = PRCreator(github_token="test-token")
+        assert creator.has_open_lucidpulls_pr("owner/repo") is False
+
+    @patch("src.git.pr_creator.Github")
+    def test_returns_false_on_api_error(self, mock_github):
+        """Test returns False on API error (allows processing to continue)."""
+        from github import GithubException
+        mock_github.return_value.get_repo.side_effect = GithubException(500, "Server Error", None)
+
+        creator = PRCreator(github_token="test-token")
+        assert creator.has_open_lucidpulls_pr("owner/repo") is False
 
 
 class TestPRResult:

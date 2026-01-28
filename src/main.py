@@ -4,7 +4,8 @@ import argparse
 import logging
 import signal
 import sys
-from datetime import datetime
+import threading
+from datetime import datetime, timedelta
 from typing import Optional
 
 import pytz
@@ -40,6 +41,7 @@ class LucidPulls:
             username=self.settings.github_username,
             email=self.settings.github_email,
             ssh_key_path=self.settings.ssh_key_path,
+            clone_dir=self.settings.clone_dir,
         )
         self.pr_creator = PRCreator(github_token=self.settings.github_token)
 
@@ -62,23 +64,31 @@ class LucidPulls:
             timezone=self.settings.timezone,
         )
 
-        # Track current run
-        self._current_run_id: Optional[int] = None
+        # Shutdown flag with lock for thread safety
         self._shutdown = False
+        self._lock = threading.Lock()
+        # Event is set when idle, cleared while _process_repo is running
+        self._idle = threading.Event()
+        self._idle.set()
 
     def run_review(self) -> None:
         """Run the nightly review process."""
         logger.info("Starting nightly review")
 
+        # Mark the deadline anchor for this review cycle
+        self.deadline.mark_review_started()
+
         # Start tracking this run
-        run = self.history.start_run()
-        self._current_run_id = run.id
+        run_id = self.history.start_run()
 
         repos = self.settings.repo_list
         if not repos:
-            logger.warning("No repositories configured")
-            self.history.complete_run(run.id, 0, 0)
+            logger.info("No repositories configured")
+            self.history.complete_run(run_id, 0, 0)
             return
+
+        # Clean up stale repo clones
+        self.repo_manager.cleanup_stale_repos(repos)
 
         logger.info(f"Processing {len(repos)} repositories")
 
@@ -86,55 +96,87 @@ class LucidPulls:
         repos_reviewed = 0
 
         for repo_name in repos:
-            if self._shutdown:
-                logger.info("Shutdown requested, stopping review")
-                break
+            with self._lock:
+                if self._shutdown:
+                    logger.info("Shutdown requested, stopping review")
+                    break
 
             if self.deadline.is_past_deadline():
                 logger.warning("Deadline reached, stopping review")
                 break
 
             try:
-                result = self._process_repo(repo_name)
+                self._idle.clear()
+                result = self._process_repo(repo_name, run_id)
                 repos_reviewed += 1
                 if result:
                     prs_created += 1
             except Exception as e:
                 logger.error(f"Error processing {repo_name}: {e}")
-                self.history.record_pr(
-                    run.id,
-                    repo_name=repo_name,
-                    success=False,
-                    error=str(e),
-                )
+                try:
+                    self.history.record_pr(
+                        run_id,
+                        repo_name=repo_name,
+                        success=False,
+                        error=str(e),
+                    )
+                except Exception as db_err:
+                    logger.error(f"Failed to record error for {repo_name}: {db_err}")
+            finally:
+                self._idle.set()
 
         # Complete the run
-        self.history.complete_run(run.id, repos_reviewed, prs_created)
+        self.history.complete_run(run_id, repos_reviewed, prs_created)
         logger.info(f"Review complete: {repos_reviewed} repos, {prs_created} PRs")
 
-    def _process_repo(self, repo_name: str) -> bool:
+    def _process_repo(self, repo_name: str, run_id: int) -> bool:
         """Process a single repository.
 
         Args:
             repo_name: Full repository name (owner/repo).
+            run_id: The current review run ID.
 
         Returns:
             True if a PR was created.
         """
-        if self._current_run_id is None:
-            logger.error(f"Cannot process {repo_name}: no active run")
-            return False
-
         logger.info(f"Processing {repo_name}")
 
         # Clone or pull the repository
         repo_info = self.repo_manager.clone_or_pull(repo_name)
         if not repo_info:
             self.history.record_pr(
-                self._current_run_id,
+                run_id,
                 repo_name=repo_name,
                 success=False,
                 error="Failed to clone/pull repository",
+            )
+            return False
+
+        try:
+            return self._analyze_and_fix(repo_name, repo_info, run_id)
+        finally:
+            # Always release repo resources after processing
+            self.repo_manager.close_repo(repo_name)
+
+    def _analyze_and_fix(self, repo_name: str, repo_info, run_id: int) -> bool:
+        """Run analysis and apply fix for a repo. Separated for resource cleanup.
+
+        Args:
+            repo_name: Full repository name (owner/repo).
+            repo_info: RepoInfo from clone_or_pull.
+            run_id: The current review run ID.
+
+        Returns:
+            True if a PR was created.
+        """
+        # Check for existing LucidPulls PR early (before expensive LLM analysis)
+        if self.pr_creator.has_open_lucidpulls_pr(repo_name):
+            logger.info(f"Skipping {repo_name}: existing LucidPulls PR found")
+            self.history.record_pr(
+                run_id,
+                repo_name=repo_name,
+                success=False,
+                error="Existing LucidPulls PR already open",
             )
             return False
 
@@ -142,6 +184,17 @@ class LucidPulls:
         issues = self.pr_creator.get_open_issues(repo_name)
         issues = self.issue_analyzer.filter_actionable(issues)
         issues = self.issue_analyzer.prioritize(issues, limit=5)
+
+        # Skip LLM analysis if no actionable issues
+        if not issues:
+            logger.info(f"No actionable issues for {repo_name}, skipping analysis")
+            self.history.record_pr(
+                run_id,
+                repo_name=repo_name,
+                success=False,
+                error="No actionable issues found",
+            )
+            return False
 
         # Analyze code
         result = self.code_analyzer.analyze(
@@ -151,9 +204,9 @@ class LucidPulls:
         )
 
         if not result.found_fix or not result.fix:
-            logger.info(f"No actionable fix found for {repo_name}")
+            logger.debug(f"No actionable fix found for {repo_name}")
             self.history.record_pr(
-                self._current_run_id,
+                run_id,
                 repo_name=repo_name,
                 success=False,
                 error="No actionable fixes identified",
@@ -163,23 +216,12 @@ class LucidPulls:
         fix = result.fix
         logger.info(f"Found fix: {fix.pr_title}")
 
-        # Check for existing LucidPulls PR
-        if self.pr_creator.has_open_lucidpulls_pr(repo_name):
-            logger.info(f"Skipping {repo_name}: existing LucidPulls PR found")
-            self.history.record_pr(
-                self._current_run_id,
-                repo_name=repo_name,
-                success=False,
-                error="Existing LucidPulls PR already open",
-            )
-            return False
-
         # Create branch with sanitized file path
         safe_file = sanitize_branch_name(fix.file_path)
-        branch_name = f"lucidpulls/{datetime.now().strftime('%Y%m%d')}-{safe_file}"
+        branch_name = f"lucidpulls/{datetime.now().strftime('%Y%m%d-%H%M%S')}-{safe_file}"
         if not self.repo_manager.create_branch(repo_info, branch_name):
             self.history.record_pr(
-                self._current_run_id,
+                run_id,
                 repo_name=repo_name,
                 success=False,
                 error="Failed to create branch",
@@ -190,7 +232,7 @@ class LucidPulls:
         if not self.code_analyzer.apply_fix(repo_info.local_path, fix):
             self.repo_manager.cleanup_branch(repo_info, branch_name)
             self.history.record_pr(
-                self._current_run_id,
+                run_id,
                 repo_name=repo_name,
                 success=False,
                 error="Failed to apply fix",
@@ -202,7 +244,7 @@ class LucidPulls:
         if not self.repo_manager.commit_changes(repo_info, fix.file_path, commit_msg):
             self.repo_manager.cleanup_branch(repo_info, branch_name)
             self.history.record_pr(
-                self._current_run_id,
+                run_id,
                 repo_name=repo_name,
                 success=False,
                 error="Failed to commit changes",
@@ -213,7 +255,7 @@ class LucidPulls:
         if not self.repo_manager.push_branch(repo_info, branch_name):
             self.repo_manager.cleanup_branch(repo_info, branch_name)
             self.history.record_pr(
-                self._current_run_id,
+                run_id,
                 repo_name=repo_name,
                 success=False,
                 error="Failed to push branch",
@@ -232,7 +274,7 @@ class LucidPulls:
 
         if not pr_result.success:
             self.history.record_pr(
-                self._current_run_id,
+                run_id,
                 repo_name=repo_name,
                 success=False,
                 error=pr_result.error or "Failed to create PR",
@@ -241,7 +283,7 @@ class LucidPulls:
 
         # Record success
         self.history.record_pr(
-            self._current_run_id,
+            run_id,
             repo_name=repo_name,
             pr_number=pr_result.pr_number,
             pr_url=pr_result.pr_url,
@@ -251,6 +293,50 @@ class LucidPulls:
 
         logger.info(f"Created PR #{pr_result.pr_number}: {pr_result.pr_url}")
         return True
+
+    def test_notifications(self) -> None:
+        """Send a test notification to verify delivery is working."""
+        from src.notifications.base import PRSummary, ReviewReport
+
+        logger.info("Sending test notification")
+
+        if not self.notifier.is_configured():
+            logger.error(
+                f"Notification channel {self.notifier.channel_name} is not configured"
+            )
+            return
+
+        now = datetime.now()
+        report = ReviewReport(
+            date=now,
+            repos_reviewed=2,
+            prs_created=1,
+            start_time=now.replace(hour=2, minute=0, second=0),
+            end_time=now.replace(hour=3, minute=42, second=0),
+            prs=[
+                PRSummary(
+                    repo_name="example/sample-repo",
+                    pr_number=42,
+                    pr_url="https://github.com/example/sample-repo/pull/42",
+                    pr_title="Fix null check in request handler",
+                    success=True,
+                ),
+                PRSummary(
+                    repo_name="example/other-repo",
+                    pr_number=None,
+                    pr_url=None,
+                    pr_title=None,
+                    success=False,
+                    error="No actionable issues found",
+                ),
+            ],
+        )
+
+        result = self.notifier.send_report(report)
+        if result.success:
+            logger.info(f"Test notification sent via {self.notifier.channel_name}")
+        else:
+            logger.error(f"Test notification failed: {result.error}")
 
     def send_report(self) -> None:
         """Send the morning report notification."""
@@ -264,12 +350,16 @@ class LucidPulls:
 
         # Convert UTC to local timezone for comparison
         tz = pytz.timezone(self.settings.timezone)
-        today = datetime.now(tz).date()
+        now_local = datetime.now(tz)
+        today = now_local.date()
         # run.started_at is naive UTC, make it aware then convert to local
         run_started_local = pytz.utc.localize(run.started_at).astimezone(tz)
         run_date = run_started_local.date()
 
-        if run_date != today:
+        # Allow runs that started yesterday evening (before midnight) to match today's report,
+        # since a 11:50 PM start that finishes at 12:10 AM should still report in the morning.
+        yesterday = today - timedelta(days=1)
+        if run_date != today and run_date != yesterday:
             logger.info(f"Latest run was on {run_date}, skipping report for today")
             return
 
@@ -288,6 +378,11 @@ class LucidPulls:
     def start(self) -> None:
         """Start the LucidPulls service."""
         logger.info("Starting LucidPulls service")
+
+        # Validate required configuration
+        if not self.settings.repo_list:
+            logger.error("No repositories configured - set REPOS environment variable")
+            sys.exit(1)
 
         # Check LLM availability
         if not self.llm.is_available():
@@ -321,10 +416,50 @@ class LucidPulls:
         self.scheduler.start()
 
     def _signal_handler(self, signum: int, frame) -> None:
-        """Handle shutdown signals."""
+        """Handle shutdown signals gracefully.
+
+        Sets the shutdown flag and waits for any in-flight repo processing
+        to finish before tearing down resources.
+        """
         logger.info(f"Received signal {signum}, shutting down...")
-        self._shutdown = True
+        with self._lock:
+            self._shutdown = True
         self.scheduler.stop()
+        # Wait for any in-progress repo operation to finish (up to 60s)
+        if not self._idle.is_set():
+            logger.info("Waiting for in-progress repo operation to finish...")
+            self._idle.wait(timeout=60)
+        self.close()
+
+    def close(self) -> None:
+        """Clean up all resources."""
+        logger.debug("Closing LucidPulls resources")
+
+        # Close repo manager (includes GitHub client and git repos)
+        if hasattr(self, "repo_manager"):
+            self.repo_manager.close()
+
+        # Close PR creator (GitHub client)
+        if hasattr(self, "pr_creator"):
+            self.pr_creator.close()
+
+        # Close LLM client (HTTP client)
+        if hasattr(self, "llm") and hasattr(self.llm, "close"):
+            self.llm.close()
+
+        # Close notifier (HTTP client)
+        if hasattr(self, "notifier") and hasattr(self.notifier, "close"):
+            self.notifier.close()
+
+        # Close database engine
+        if hasattr(self, "history"):
+            self.history.close()
+
+    def __enter__(self) -> "LucidPulls":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
 
 
 def main() -> None:
@@ -343,6 +478,11 @@ def main() -> None:
         help="Send report immediately for latest run",
     )
     parser.add_argument(
+        "--test-notifications",
+        action="store_true",
+        help="Send a test notification to verify delivery",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Enable debug logging",
@@ -357,18 +497,22 @@ def main() -> None:
 
     logger.info("LucidPulls starting up")
 
-    # Create orchestrator
+    # Create orchestrator and ensure cleanup on exit
     agent = LucidPulls(settings)
-
-    if args.run_now:
-        logger.info("Running review immediately")
-        agent.run_review()
-    elif args.send_report:
-        logger.info("Sending report immediately")
-        agent.send_report()
-    else:
-        # Start the scheduled service
-        agent.start()
+    try:
+        if args.run_now:
+            logger.info("Running review immediately")
+            agent.run_review()
+        elif args.send_report:
+            logger.info("Sending report immediately")
+            agent.send_report()
+        elif args.test_notifications:
+            agent.test_notifications()
+        else:
+            # Start the scheduled service
+            agent.start()
+    finally:
+        agent.close()
 
 
 if __name__ == "__main__":

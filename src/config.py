@@ -1,10 +1,11 @@
 """Configuration management for LucidPulls."""
 
-import os
+import re
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+import pytz
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -30,11 +31,11 @@ class Settings(BaseSettings):
         description="GitHub Personal Access Token for API operations",
     )
     github_username: str = Field(
-        default="YourBr0ther",
+        default="",
         description="GitHub username for commits",
     )
     github_email: str = Field(
-        default="YourBr0ther.tv@gmail.com",
+        default="",
         description="GitHub email for commits",
     )
     ssh_key_path: str = Field(
@@ -118,6 +119,12 @@ class Settings(BaseSettings):
         description="Timezone for scheduling",
     )
 
+    # Clone directory
+    clone_dir: str = Field(
+        default="/tmp/lucidpulls/repos",
+        description="Directory to clone repositories into",
+    )
+
     # Logging
     log_level: str = Field(
         default="INFO",
@@ -129,6 +136,58 @@ class Settings(BaseSettings):
     def expand_ssh_path(cls, v: str) -> str:
         """Expand ~ in SSH key path."""
         return str(Path(v).expanduser())
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, v: str) -> str:
+        """Validate timezone is a valid IANA timezone name."""
+        try:
+            pytz.timezone(v)
+            return v
+        except pytz.UnknownTimeZoneError:
+            raise ValueError(f"Invalid timezone: {v}. Must be a valid IANA timezone name.")
+
+    @field_validator("schedule_start", "schedule_deadline", "report_delivery")
+    @classmethod
+    def validate_time_format(cls, v: str) -> str:
+        """Validate time format is HH:MM."""
+        if not re.match(r"^([01]?\d|2[0-3]):[0-5]\d$", v):
+            raise ValueError(f"Invalid time format: {v}. Must be HH:MM (e.g., 02:00, 14:30)")
+        return v
+
+    @field_validator("repos")
+    @classmethod
+    def validate_repo_format(cls, v: str) -> str:
+        """Validate repository format is owner/repo."""
+        if not v:
+            return v
+        for repo in v.split(","):
+            repo = repo.strip()
+            if repo and not re.match(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$", repo):
+                raise ValueError(
+                    f"Invalid repository format: {repo}. Must be owner/repo format."
+                )
+        return v
+
+    @model_validator(mode="after")
+    def validate_github_credentials(self) -> "Settings":
+        """Validate GitHub credentials are set together."""
+        github_fields = [self.github_token, self.github_username, self.github_email]
+        non_empty = [f for f in github_fields if f]
+
+        # If any are set, all should be set
+        if non_empty and len(non_empty) < 3:
+            missing = []
+            if not self.github_token:
+                missing.append("github_token")
+            if not self.github_username:
+                missing.append("github_username")
+            if not self.github_email:
+                missing.append("github_email")
+            raise ValueError(
+                f"Incomplete GitHub configuration. Missing: {', '.join(missing)}"
+            )
+        return self
 
     @property
     def repo_list(self) -> list[str]:

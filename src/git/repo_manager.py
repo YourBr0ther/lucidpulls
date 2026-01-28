@@ -3,12 +3,13 @@
 import logging
 import os
 import shutil
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from git import Repo, GitCommandError
-from github import Github, GithubException
+from github import Auth, Github, GithubException
 
 logger = logging.getLogger("lucidpulls.git.repo_manager")
 
@@ -45,26 +46,111 @@ class RepoManager:
             ssh_key_path: Path to SSH private key.
             clone_dir: Directory to clone repositories into.
         """
-        self.github = Github(github_token)
+        self.github = Github(auth=Auth.Token(github_token), timeout=30)
         self.username = username
         self.email = email
         self.ssh_key_path = ssh_key_path
         self.clone_dir = Path(clone_dir)
         self.clone_dir.mkdir(parents=True, exist_ok=True)
 
+        # Track open Repo objects to close them properly
+        self._open_repos: dict[str, Repo] = {}
+
         # Set up SSH environment if key is provided
         self._setup_ssh_env()
 
+    # GitHub's official SSH host keys (from https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints)
+    GITHUB_HOST_KEYS = [
+        "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl",
+        "github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=",
+        "github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHdJ1IfGQlQLVcsQ7Iqd9Lo4UaX5UhGwEPa7b4QIYBfGXqTUy8gMaHRr7J/+1YlQAl3FNeaRjTJZAFsQHNkV+T7+3MHwKTwNGMJaSVQi7LcOcAzJWbT3LTamT5n+gSJjWGBiJ0olIigMwkFgMuWjhYvE23DjGqb/MBk5xGIxlGbzWPYPP/ixIqakB9tv3WtOJZXDpiLLHno+sFr/B88CZbqfOAP1joMpIwJMIEBB4BAdxEixjEqr5S/zFIVGFwPKZd+MVAzXPEgFw5DH0WH5OAe6bW6eKdpMGJQJbFmqRYjCjz12F8RO0q2LHCJPCLbNlQ=",
+    ]
+
     def _setup_ssh_env(self) -> None:
         """Configure SSH environment for git operations."""
-        if self.ssh_key_path and Path(self.ssh_key_path).exists():
-            # Create GIT_SSH_COMMAND to use specific key
-            # Note: StrictHostKeyChecking=no is used to avoid interactive prompts in automation.
-            # For higher security environments, pre-populate known_hosts with GitHub's keys instead.
-            os.environ["GIT_SSH_COMMAND"] = (
-                f"ssh -i {self.ssh_key_path} -o StrictHostKeyChecking=no"
-            )
-            logger.debug(f"SSH configured with key: {self.ssh_key_path}")
+        if not self.ssh_key_path:
+            return
+
+        key_path = Path(self.ssh_key_path)
+        if not key_path.exists():
+            logger.warning(f"SSH key not found: {self.ssh_key_path}")
+            return
+
+        # Verify the key file is readable
+        if not os.access(key_path, os.R_OK):
+            logger.error(f"SSH key is not readable: {self.ssh_key_path} — check file permissions (should be 600)")
+            return
+
+        # Ensure GitHub's host keys are in known_hosts for strict verification
+        self._ensure_github_known_hosts()
+
+        # Use StrictHostKeyChecking=yes with pre-populated known_hosts
+        os.environ["GIT_SSH_COMMAND"] = (
+            f"ssh -i {self.ssh_key_path} -o StrictHostKeyChecking=yes"
+        )
+        logger.debug(f"SSH configured with key: {self.ssh_key_path}")
+
+    def _ensure_github_known_hosts(self) -> None:
+        """Pre-populate known_hosts with GitHub's official SSH host keys."""
+        ssh_dir = Path.home() / ".ssh"
+        ssh_dir.mkdir(mode=0o700, exist_ok=True)
+
+        known_hosts_path = ssh_dir / "known_hosts"
+
+        # Read existing known_hosts content
+        existing = ""
+        if known_hosts_path.exists():
+            existing = known_hosts_path.read_text()
+
+        # Add any missing GitHub host keys
+        added = False
+        for key_line in self.GITHUB_HOST_KEYS:
+            if key_line not in existing:
+                with open(known_hosts_path, "a") as f:
+                    f.write(f"{key_line}\n")
+                added = True
+
+        if added:
+            # Ensure proper permissions
+            known_hosts_path.chmod(0o644)
+            logger.debug("Added GitHub SSH host keys to known_hosts")
+
+    def _check_rate_limit(self) -> None:
+        """Check GitHub API rate limit and wait if nearly exhausted."""
+        try:
+            rate_limit = self.github.get_rate_limit()
+            core = rate_limit.core
+            if core.remaining < 10:
+                reset_time = core.reset.timestamp()
+                wait_seconds = max(reset_time - time.time(), 0) + 5
+                if core.remaining == 0:
+                    logger.warning(f"GitHub rate limit exhausted, waiting {wait_seconds:.0f}s")
+                    time.sleep(wait_seconds)
+                else:
+                    logger.info(f"GitHub rate limit low ({core.remaining} remaining)")
+        except Exception as e:
+            logger.debug(f"Could not check rate limit: {e}")
+
+    def cleanup_stale_repos(self, active_repos: list[str]) -> None:
+        """Remove cloned repos not in the active repo list."""
+        if not self.clone_dir.exists():
+            return
+        active_set = set()
+        for repo_name in active_repos:
+            parts = repo_name.split("/")
+            if len(parts) == 2:
+                active_set.add(self.clone_dir / parts[0] / parts[1])
+
+        for owner_dir in self.clone_dir.iterdir():
+            if not owner_dir.is_dir():
+                continue
+            for repo_dir in owner_dir.iterdir():
+                if repo_dir.is_dir() and repo_dir not in active_set:
+                    logger.info(f"Cleaning stale repo: {repo_dir}")
+                    shutil.rmtree(repo_dir, ignore_errors=True)
+            # Remove empty owner dirs
+            if not any(owner_dir.iterdir()):
+                owner_dir.rmdir()
 
     def clone_or_pull(self, repo_full_name: str) -> Optional[RepoInfo]:
         """Clone a repository or pull latest changes if already cloned.
@@ -75,6 +161,7 @@ class RepoManager:
         Returns:
             RepoInfo if successful, None otherwise.
         """
+        self._check_rate_limit()
         try:
             # Get repo info from GitHub API
             gh_repo = self.github.get_repo(repo_full_name)
@@ -98,6 +185,9 @@ class RepoManager:
 
             # Configure git user for this repo
             self._configure_git_user(repo)
+
+            # Track the repo for cleanup
+            self._open_repos[repo_full_name] = repo
 
             return RepoInfo(
                 name=name,
@@ -146,8 +236,13 @@ class RepoManager:
         try:
             repo = Repo(local_path)
 
-            # Ensure we're on the default branch
-            if repo.active_branch.name != default_branch:
+            # Ensure we're on the default branch (handle detached HEAD)
+            try:
+                current_branch = repo.active_branch.name
+            except TypeError:
+                # Detached HEAD state
+                current_branch = None
+            if current_branch != default_branch:
                 repo.git.checkout(default_branch)
 
             # Reset any local changes
@@ -188,8 +283,12 @@ class RepoManager:
         try:
             repo = repo_info.repo
 
-            # Ensure we're on the default branch first
-            if repo.active_branch.name != repo_info.default_branch:
+            # Ensure we're on the default branch first (handle detached HEAD)
+            try:
+                current_branch = repo.active_branch.name
+            except TypeError:
+                current_branch = None
+            if current_branch != repo_info.default_branch:
                 repo.git.checkout(repo_info.default_branch)
 
             # Create and checkout new branch
@@ -215,6 +314,13 @@ class RepoManager:
         """
         try:
             repo = repo_info.repo
+
+            # Security: Validate file_path is within the repo
+            resolved = (repo_info.local_path / file_path).resolve()
+            if not resolved.is_relative_to(repo_info.local_path.resolve()):
+                logger.error(f"Path traversal detected in commit: {file_path}")
+                return False
+
             repo.git.add(file_path)
             repo.git.commit("-m", message)
             logger.info(f"Committed: {message}")
@@ -258,13 +364,33 @@ class RepoManager:
         except GitCommandError as e:
             logger.warning(f"Failed to cleanup branch {branch_name}: {e}")
 
+    def close_repo(self, repo_full_name: str) -> None:
+        """Close a specific repository and release its resources.
+
+        Args:
+            repo_full_name: Full repository name (owner/repo).
+        """
+        if repo_full_name in self._open_repos:
+            repo = self._open_repos.pop(repo_full_name)
+            try:
+                repo.close()
+            except Exception as e:
+                logger.debug(f"Error closing repo {repo_full_name}: {e}")
+
     def close(self) -> None:
-        """Close GitHub client connection."""
+        """Close GitHub client and all open repository connections."""
+        # Close all tracked Repo objects
+        for repo_name in list(self._open_repos.keys()):
+            self.close_repo(repo_name)
+
         if hasattr(self, "github"):
             self.github.close()
 
-    def __enter__(self):
+        # Clean up SSH environment
+        os.environ.pop("GIT_SSH_COMMAND", None)
+
+    def __enter__(self) -> "RepoManager":
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self.close()

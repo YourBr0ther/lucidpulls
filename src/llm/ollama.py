@@ -5,13 +5,13 @@ from typing import Optional
 
 import httpx
 
-from src.llm.base import BaseLLM, LLMResponse
+from src.llm.base import BaseHTTPLLM, LLMResponse, DEFAULT_TIMEOUT
 from src.utils import retry
 
 logger = logging.getLogger("lucidpulls.llm.ollama")
 
 
-class OllamaLLM(BaseLLM):
+class OllamaLLM(BaseHTTPLLM):
     """Ollama local LLM client."""
 
     def __init__(self, host: str = "http://localhost:11434", model: str = "codellama"):
@@ -21,9 +21,9 @@ class OllamaLLM(BaseLLM):
             host: Ollama server URL.
             model: Model name to use.
         """
+        super().__init__(timeout=DEFAULT_TIMEOUT)
         self.host = host.rstrip("/")
         self.model = model
-        self._client = httpx.Client(timeout=300.0)  # 5 minute timeout for generation
 
     def generate(self, prompt: str, system_prompt: Optional[str] = None) -> LLMResponse:
         """Generate a response using Ollama.
@@ -60,7 +60,12 @@ class OllamaLLM(BaseLLM):
         response = self._client.post(url, json=payload)
         response.raise_for_status()
 
-        data = response.json()
+        try:
+            data = response.json()
+        except ValueError:
+            logger.error("Ollama returned invalid JSON response")
+            return LLMResponse(content="", model=self.model)
+
         content = data.get("response", "")
 
         logger.debug(f"Received response: {len(content)} characters")
@@ -85,11 +90,17 @@ class OllamaLLM(BaseLLM):
 
             # Check if our model is available
             data = response.json()
-            models = [m.get("name", "").split(":")[0] for m in data.get("models", [])]
+            available_models = data.get("models", [])
 
-            if self.model not in models and f"{self.model}:latest" not in [
-                m.get("name", "") for m in data.get("models", [])
-            ]:
+            # Build a set of model names (both base name and full name with tag)
+            model_names = set()
+            for m in available_models:
+                full_name = m.get("name", "")
+                model_names.add(full_name)
+                # Also add base name without tag
+                model_names.add(full_name.split(":")[0])
+
+            if self.model not in model_names:
                 logger.warning(f"Model {self.model} not found in Ollama")
                 return False
 
@@ -102,18 +113,3 @@ class OllamaLLM(BaseLLM):
     def provider_name(self) -> str:
         """Get provider name."""
         return "Ollama"
-
-    def close(self) -> None:
-        """Close the HTTP client."""
-        if hasattr(self, "_client"):
-            self._client.close()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
-
-    def __del__(self):
-        """Clean up HTTP client."""
-        self.close()

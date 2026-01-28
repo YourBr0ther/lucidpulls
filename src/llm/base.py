@@ -4,6 +4,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional
 
+import httpx
+
+# Constants for HTTP LLM clients
+DEFAULT_TIMEOUT = 300.0  # 5 minute timeout for generation
+DEFAULT_MAX_TOKENS = 4096
+
 
 @dataclass
 class LLMResponse:
@@ -54,6 +60,33 @@ class BaseLLM(ABC):
             Human-readable provider name.
         """
         pass
+
+
+class BaseHTTPLLM(BaseLLM):
+    """Base class for HTTP-based LLM providers with shared functionality."""
+
+    def __init__(self, timeout: float = DEFAULT_TIMEOUT):
+        """Initialize HTTP LLM base.
+
+        Args:
+            timeout: Request timeout in seconds.
+        """
+        self._client = httpx.Client(timeout=timeout)
+
+    def close(self) -> None:
+        """Close the HTTP client."""
+        if hasattr(self, "_client") and self._client is not None:
+            self._client.close()
+
+    def __enter__(self) -> "BaseHTTPLLM":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        """Clean up HTTP client."""
+        self.close()
 
 
 # Common prompts for code review

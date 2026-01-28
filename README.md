@@ -73,6 +73,9 @@ python -m src.main --run-now
 # Send report only
 python -m src.main --send-report
 
+# Verify notification delivery
+python -m src.main --test-notifications
+
 # Debug mode
 python -m src.main --debug
 ```
@@ -212,6 +215,37 @@ pytest                              # Run all tests
 pytest --cov=src --cov-report=html  # Run with coverage
 pytest tests/test_analyzers.py     # Run specific test file
 ```
+
+### Verifying Notifications
+
+Send a test notification to confirm your webhook is working:
+
+```bash
+python -m src.main --test-notifications
+```
+
+This sends a sample report with dummy data to your configured Discord or Teams channel. No repositories are cloned and no PRs are created.
+
+## Failure Behavior
+
+LucidPulls is designed to fail gracefully. No single failure crashes the service or blocks other repositories from being reviewed.
+
+| Scenario | What Happens | Recovery |
+|:---|:---|:---|
+| **LLM unavailable** | Startup check fails with `--run-now` or scheduled service. Per-repo analysis returns empty response, logged as "No actionable fixes identified". | Service retries on next scheduled run. Fix LLM connectivity and restart, or switch `LLM_PROVIDER`. |
+| **GitHub rate limit** | Proactive quota check pauses until reset (+5s buffer). API calls retry 3x with exponential backoff. | Automatic. Remaining repos process after cooldown. |
+| **SSH key missing/invalid** | `clone_or_pull` fails for affected repo. Logged as "Failed to clone/pull repository". Other repos continue. | Fix `SSH_KEY_PATH` in `.env`. Ensure key has GitHub access. |
+| **GitHub token invalid** | PR creation and issue fetching fail. Repos still clone via SSH but no PRs are opened. | Update `GITHUB_TOKEN` in `.env`. |
+| **LLM returns bad JSON** | Parser tries markdown fences, raw JSON, and nested extraction. If all fail, logged as "No actionable fixes identified". | Automatic skip. Consider switching to a more reliable model. |
+| **Fix fails syntax check** | Python files are validated via `ast.parse()`, JS/TS via `node --check`. Invalid fixes are rejected, branch is cleaned up. | Automatic. No broken code is committed. |
+| **Fix matches multiple locations** | Exact-match replacement requires the original code appears exactly once. Multi-match fixes are rejected. | Automatic. Prevents ambiguous changes. |
+| **Webhook URL missing/invalid** | Notification send fails with logged error. Review process is unaffected. | Set `DISCORD_WEBHOOK_URL` or `TEAMS_WEBHOOK_URL` in `.env`. Verify with `--test-notifications`. |
+| **Repository already has open PR** | Skipped with "Existing LucidPulls PR already open". Prevents duplicate PRs. | Merge or close the existing LucidPulls PR. |
+| **Deadline reached mid-review** | Current repo finishes, remaining repos are skipped. Run is recorded as complete with partial results. | Automatic. Adjust `SCHEDULE_DEADLINE` if more time is needed. |
+| **Process receives SIGINT/SIGTERM** | Shutdown flag set, waits up to 60s for in-flight repo operation, then closes all resources. | Automatic graceful shutdown. |
+| **Database error** | Failure is logged. Review operations continue but history may be incomplete. | Check `data/` directory permissions. SQLite DB is auto-created on next start. |
+
+All failures are logged at the appropriate level (`WARNING` or `ERROR`) and recorded in the database when possible. The service continues to the next repository or next scheduled run.
 
 ---
 

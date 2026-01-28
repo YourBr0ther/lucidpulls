@@ -1,11 +1,12 @@
 """Pull request creation functionality."""
 
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from typing import Optional
 
-from github import Github, GithubException
+from github import Auth, Github, GithubException, RateLimitExceededException
 
 from src.utils import retry
 
@@ -32,16 +33,43 @@ class PRCreator:
             github_token: GitHub Personal Access Token.
             rate_limit_delay: Minimum delay between API calls in seconds.
         """
-        self.github = Github(github_token)
+        self.github = Github(auth=Auth.Token(github_token), timeout=30)
         self._last_call = 0.0
         self._rate_limit_delay = rate_limit_delay
+        self._rate_limit_lock = threading.Lock()
 
     def _rate_limit(self) -> None:
-        """Ensure minimum delay between API calls."""
-        elapsed = time.time() - self._last_call
-        if elapsed < self._rate_limit_delay:
-            time.sleep(self._rate_limit_delay - elapsed)
-        self._last_call = time.time()
+        """Ensure minimum delay between API calls and check quota (thread-safe)."""
+        with self._rate_limit_lock:
+            elapsed = time.time() - self._last_call
+            if elapsed < self._rate_limit_delay:
+                time.sleep(self._rate_limit_delay - elapsed)
+            self._last_call = time.time()
+
+        # Proactively check remaining quota
+        self._check_rate_limit_quota()
+
+    def _check_rate_limit_quota(self) -> None:
+        """Check GitHub API rate limit and sleep until reset if exhausted."""
+        try:
+            rate_limit = self.github.get_rate_limit()
+            core = rate_limit.core
+
+            if core.remaining < 10:
+                reset_time = core.reset.timestamp()
+                wait_seconds = max(reset_time - time.time(), 0) + 5  # 5s buffer
+                if core.remaining == 0:
+                    logger.warning(
+                        f"GitHub rate limit exhausted. Waiting {wait_seconds:.0f}s until reset."
+                    )
+                    time.sleep(wait_seconds)
+                else:
+                    logger.info(
+                        f"GitHub rate limit low ({core.remaining} remaining). "
+                        f"Reset in {wait_seconds:.0f}s."
+                    )
+        except Exception as e:
+            logger.debug(f"Could not check rate limit: {e}")
 
     def has_open_lucidpulls_pr(self, repo_full_name: str) -> bool:
         """Check if there's already an open PR from LucidPulls.
@@ -104,7 +132,9 @@ class PRCreator:
                 repo_full_name, branch_name, base_branch, title, body
             )
         except GithubException as e:
-            error_msg = str(e.data.get("message", str(e))) if hasattr(e, "data") else str(e)
+            error_msg = str(e)
+            if hasattr(e, "data") and isinstance(e.data, dict):
+                error_msg = str(e.data.get("message", error_msg))
             logger.error(f"Failed to create PR after retries: {error_msg}")
             return PRResult(success=False, error=error_msg)
         except Exception as e:
@@ -121,22 +151,27 @@ class PRCreator:
         body: str,
     ) -> PRResult:
         """Internal PR creation method with retry logic."""
-        repo = self.github.get_repo(repo_full_name)
+        try:
+            repo = self.github.get_repo(repo_full_name)
 
-        pr = repo.create_pull(
-            title=title,
-            body=body,
-            head=branch_name,
-            base=base_branch,
-        )
+            pr = repo.create_pull(
+                title=title,
+                body=body,
+                head=branch_name,
+                base=base_branch,
+            )
 
-        logger.info(f"Created PR #{pr.number}: {title}")
+            logger.info(f"Created PR #{pr.number}: {title}")
 
-        return PRResult(
-            success=True,
-            pr_number=pr.number,
-            pr_url=pr.html_url,
-        )
+            return PRResult(
+                success=True,
+                pr_number=pr.number,
+                pr_url=pr.html_url,
+            )
+        except RateLimitExceededException:
+            # Wait for rate limit reset before retrying
+            self._check_rate_limit_quota()
+            raise
 
     def get_open_issues(
         self,
@@ -205,26 +240,29 @@ class PRCreator:
             "created_at": issue.created_at.isoformat() if issue.created_at else None,
         }
 
-    def add_comment(self, repo_full_name: str, pr_number: int, comment: str) -> bool:
+    def add_comment(self, repo: str, pr_number: int, body: str) -> bool:
         """Add a comment to a pull request.
 
         Args:
-            repo_full_name: Full repository name (owner/repo).
-            pr_number: PR number.
-            comment: Comment text.
+            repo: Full repository name (owner/repo).
+            pr_number: PR number to comment on.
+            body: Comment body text.
 
         Returns:
-            True if successful.
+            True if comment was added successfully.
         """
         self._rate_limit()
         try:
-            repo = self.github.get_repo(repo_full_name)
-            pr = repo.get_pull(pr_number)
-            pr.create_issue_comment(comment)
-            logger.debug(f"Added comment to PR #{pr_number}")
+            gh_repo = self.github.get_repo(repo)
+            pr = gh_repo.get_pull(pr_number)
+            pr.create_issue_comment(body)
+            logger.info(f"Added comment to PR #{pr_number} in {repo}")
             return True
         except GithubException as e:
             logger.error(f"Failed to add comment to PR #{pr_number}: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error adding comment: {e}")
             return False
 
     def close(self) -> None:

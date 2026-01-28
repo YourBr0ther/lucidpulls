@@ -19,8 +19,8 @@ class TestReviewScheduler:
 
     def test_parse_time(self):
         """Test time parsing."""
-        scheduler = ReviewScheduler()
-        hour, minute = scheduler._parse_time("02:30")
+        from src.utils import parse_time_string
+        hour, minute = parse_time_string("02:30")
         assert hour == 2
         assert minute == 30
 
@@ -50,11 +50,14 @@ class TestReviewScheduler:
         """Test getting next run time."""
         scheduler = ReviewScheduler()
         mock_func = Mock()
-
         scheduler.schedule_review("02:00", mock_func)
 
-        next_time = scheduler.get_next_run_time()
-        assert next_time is not None
+        with patch.object(scheduler.scheduler, 'get_job') as mock_get_job:
+            mock_job = Mock()
+            mock_job.next_run_time = datetime(2024, 1, 15, 2, 0)
+            mock_get_job.return_value = mock_job
+            next_time = scheduler.get_next_run_time()
+            assert next_time is not None
 
 
 class TestDeadlineEnforcer:

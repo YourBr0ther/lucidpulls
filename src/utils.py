@@ -46,7 +46,7 @@ def retry(
                         time.sleep(current_delay)
                         current_delay *= backoff
 
-            raise last_exception
+            raise last_exception or RuntimeError("Retry failed without exception")
         return wrapper
     return decorator
 
@@ -70,3 +70,33 @@ def sanitize_branch_name(name: str) -> str:
     name = name.strip("-")
     # Limit length
     return name[:50] if len(name) > 50 else name
+
+
+def parse_time_string(time_str: str) -> tuple[int, int]:
+    """Parse time string into hour and minute.
+
+    Args:
+        time_str: Time in HH:MM format.
+
+    Returns:
+        Tuple of (hour, minute).
+
+    Raises:
+        ValueError: If format is invalid.
+    """
+    if not time_str or ":" not in time_str:
+        raise ValueError(f"Invalid time format '{time_str}', expected HH:MM")
+
+    parts = time_str.split(":")
+    if len(parts) != 2:
+        raise ValueError(f"Invalid time format '{time_str}', expected HH:MM")
+
+    try:
+        hour, minute = int(parts[0]), int(parts[1])
+    except ValueError:
+        raise ValueError(f"Invalid time format '{time_str}', expected numeric HH:MM")
+
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ValueError(f"Time out of range: {time_str}")
+
+    return hour, minute

@@ -27,6 +27,7 @@ def setup_logging(level: Optional[str] = None) -> logging.Logger:
 
     logger = logging.getLogger("lucidpulls")
     logger.setLevel(log_level)
+    logger.handlers.clear()
     logger.addHandler(handler)
 
     # Prevent duplicate logs if setup is called multiple times

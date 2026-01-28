@@ -1,11 +1,20 @@
 """LLM provider implementations."""
 
-from src.llm.base import BaseLLM, LLMResponse
+from src.llm.base import BaseLLM, BaseHTTPLLM, LLMResponse, DEFAULT_TIMEOUT, DEFAULT_MAX_TOKENS
 from src.llm.azure import AzureLLM
 from src.llm.nanogpt import NanoGPTLLM
 from src.llm.ollama import OllamaLLM
 
-__all__ = ["BaseLLM", "LLMResponse", "AzureLLM", "NanoGPTLLM", "OllamaLLM"]
+__all__ = [
+    "BaseLLM",
+    "BaseHTTPLLM",
+    "LLMResponse",
+    "AzureLLM",
+    "NanoGPTLLM",
+    "OllamaLLM",
+    "DEFAULT_TIMEOUT",
+    "DEFAULT_MAX_TOKENS",
+]
 
 
 def get_llm(provider: str, config: dict) -> BaseLLM:

@@ -2,13 +2,18 @@
 
 import json
 import logging
+import os
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Optional
 
+import httpx
+
 from src.analyzers.base import BaseAnalyzer, AnalysisResult, FixSuggestion
 from src.llm.base import BaseLLM, CODE_REVIEW_SYSTEM_PROMPT, FIX_GENERATION_PROMPT_TEMPLATE
+from src.utils import retry
 
 logger = logging.getLogger("lucidpulls.analyzers.code")
 
@@ -23,6 +28,30 @@ class CodeAnalyzer(BaseAnalyzer):
             llm: LLM provider instance.
         """
         self.llm = llm
+
+    @retry(
+        max_attempts=2,
+        delay=2.0,
+        backoff=2.0,
+        exceptions=(ValueError, ConnectionError, TimeoutError, OSError, httpx.TimeoutException),
+    )
+    def _call_llm_with_retry(self, prompt: str, system_prompt: str) -> str:
+        """Call LLM with retry logic.
+
+        Args:
+            prompt: The prompt to send to the LLM.
+            system_prompt: The system prompt to use.
+
+        Returns:
+            LLM response content.
+
+        Raises:
+            ValueError: If LLM returns an unsuccessful response.
+        """
+        response = self.llm.generate(prompt, system_prompt=system_prompt)
+        if not response.success:
+            raise ValueError("LLM returned empty response")
+        return response.content
 
     def analyze(
         self,
@@ -68,23 +97,26 @@ class CodeAnalyzer(BaseAnalyzer):
                 code_files=code_content,
             )
 
-            # Send to LLM
+            # Send to LLM with retry
             logger.info(f"Sending {len(files)} files to LLM for analysis")
-            response = self.llm.generate(prompt, system_prompt=CODE_REVIEW_SYSTEM_PROMPT)
-
-            if not response.success:
-                logger.error("LLM returned empty response")
+            try:
+                response_content = self._call_llm_with_retry(
+                    prompt, system_prompt=CODE_REVIEW_SYSTEM_PROMPT
+                )
+            except (ValueError, httpx.TimeoutException) as e:
+                error_msg = "LLM request timed out" if isinstance(e, httpx.TimeoutException) else "LLM returned empty response after retries"
+                logger.error(f"LLM call failed after retries: {e}")
                 return AnalysisResult(
                     repo_name=repo_name,
                     found_fix=False,
-                    error="LLM returned empty response",
+                    error=error_msg,
                     files_analyzed=len(files),
                     issues_reviewed=len(issues) if issues else 0,
                     analysis_time_seconds=time.time() - start_time,
                 )
 
             # Parse LLM response
-            fix = self._parse_llm_response(response.content)
+            fix = self._parse_llm_response(response_content)
 
             analysis_time = time.time() - start_time
             logger.info(
@@ -128,13 +160,15 @@ class CodeAnalyzer(BaseAnalyzer):
             lines.append(f"  Labels: {labels}")
             if issue.get("body"):
                 # Truncate long bodies
-                body = issue["body"][:500]
-                if len(issue["body"]) > 500:
-                    body += "..."
+                body = issue["body"]
+                if len(body) > 500:
+                    body = body[:500] + "..."
                 lines.append(f"  Description: {body}")
             lines.append("")
 
         return "\n".join(lines)
+
+    MAX_LLM_RESPONSE_SIZE = 500_000  # 500KB
 
     def _parse_llm_response(self, response: str) -> Optional[FixSuggestion]:
         """Parse LLM response into a FixSuggestion.
@@ -145,6 +179,10 @@ class CodeAnalyzer(BaseAnalyzer):
         Returns:
             FixSuggestion if valid response, None otherwise.
         """
+        if len(response) > self.MAX_LLM_RESPONSE_SIZE:
+            logger.warning(f"LLM response too large ({len(response)} chars), truncating")
+            response = response[:self.MAX_LLM_RESPONSE_SIZE]
+
         try:
             # Try to extract JSON from response
             json_str = self._extract_json(response)
@@ -169,6 +207,13 @@ class CodeAnalyzer(BaseAnalyzer):
                     logger.warning(f"Missing required field in LLM response: {field}")
                     return None
 
+            # Validate file_path early
+            file_path_str = data["file_path"]
+            if ("\x00" in file_path_str or file_path_str.startswith("/")
+                    or ".." in file_path_str.split("/") or ".." in file_path_str.split("\\")):
+                logger.warning(f"Suspicious file_path from LLM: {file_path_str!r}")
+                return None
+
             # Only accept high confidence fixes
             confidence = data.get("confidence", "low").lower()
             if confidence != "high":
@@ -176,7 +221,7 @@ class CodeAnalyzer(BaseAnalyzer):
                 return None
 
             return FixSuggestion(
-                file_path=data["file_path"],
+                file_path=file_path_str,
                 bug_description=data["bug_description"],
                 fix_description=data["fix_description"],
                 original_code=data["original_code"],
@@ -184,7 +229,7 @@ class CodeAnalyzer(BaseAnalyzer):
                 pr_title=data["pr_title"],
                 pr_body=data["pr_body"],
                 confidence=confidence,
-                related_issue=data.get("related_issue"),
+                related_issue=int(data["related_issue"]) if data.get("related_issue") and str(data["related_issue"]).isdigit() else None,
             )
 
         except json.JSONDecodeError as e:
@@ -249,7 +294,12 @@ class CodeAnalyzer(BaseAnalyzer):
             True if fix was applied successfully.
         """
         try:
-            file_path = repo_path / fix.file_path
+            file_path = (repo_path / fix.file_path).resolve()
+
+            # Security: Prevent path traversal attacks
+            if not file_path.is_relative_to(repo_path.resolve()):
+                logger.error(f"Path traversal detected: {fix.file_path}")
+                return False
 
             if not file_path.exists():
                 logger.error(f"File not found: {fix.file_path}")
@@ -257,31 +307,42 @@ class CodeAnalyzer(BaseAnalyzer):
 
             content = file_path.read_text(encoding="utf-8")
 
-            # Check for multiple matches
+            # Check for exact match
             match_count = content.count(fix.original_code)
             if match_count == 0:
                 logger.error(f"Original code not found in {fix.file_path}")
                 return False
             if match_count > 1:
-                logger.warning(
+                logger.error(
                     f"Found {match_count} matches for original code in {fix.file_path}, "
-                    "applying to first match only"
+                    "cannot safely apply fix — LLM response too ambiguous"
                 )
-
-            # Apply the fix (only first occurrence)
-            new_content = content.replace(fix.original_code, fix.fixed_code, 1)
-
-            file_path.write_text(new_content, encoding="utf-8")
-            logger.info(f"Applied fix to {fix.file_path}")
-
-            # Validate syntax (basic check)
-            if not self._validate_syntax(file_path):
-                # Revert
-                file_path.write_text(content, encoding="utf-8")
-                logger.error(f"Syntax validation failed, reverted {fix.file_path}")
                 return False
 
-            return True
+            # Apply the fix (single exact match)
+            new_content = content.replace(fix.original_code, fix.fixed_code, 1)
+
+            # Write to temp file first, then validate before replacing the original
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                suffix=file_path.suffix, dir=file_path.parent
+            )
+            try:
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as tmp_f:
+                    tmp_f.write(new_content)
+
+                # Validate syntax on the temp file
+                if not self._validate_syntax(Path(tmp_path)):
+                    logger.error(f"Syntax validation failed, discarding fix for {fix.file_path}")
+                    return False
+
+                # Atomic replace: rename temp file over original
+                os.replace(tmp_path, file_path)
+                logger.info(f"Applied fix to {fix.file_path}")
+                return True
+            finally:
+                # Clean up temp file if it still exists (validation failed)
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
 
         except Exception as e:
             logger.error(f"Failed to apply fix: {e}")
@@ -331,22 +392,22 @@ class CodeAnalyzer(BaseAnalyzer):
             file_path: Path to the JS/TS file.
 
         Returns:
-            True if syntax is valid or if Node.js is not available.
+            True if syntax is valid, False otherwise (fail-safe).
         """
         try:
             result = subprocess.run(
                 ["node", "--check", str(file_path)],
                 capture_output=True,
-                timeout=5,
+                timeout=2,
             )
             return result.returncode == 0
         except FileNotFoundError:
-            # Node.js not installed, skip validation
-            logger.debug("Node.js not available for JS/TS syntax validation")
-            return True
+            # Node.js not installed - fail safe, don't allow unvalidated JS
+            logger.warning("Node.js not available, cannot validate JS/TS syntax")
+            return False
         except subprocess.TimeoutExpired:
             logger.warning(f"JS syntax validation timed out for {file_path}")
-            return True
+            return False
         except Exception as e:
-            logger.debug(f"JS syntax validation failed: {e}")
-            return True
+            logger.error(f"JS syntax validation error: {e}")
+            return False

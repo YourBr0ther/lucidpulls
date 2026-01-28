@@ -3,17 +3,29 @@
 import logging
 from dataclasses import dataclass
 from typing import Optional
+from typing import TypedDict
 
 from src.llm.base import BaseLLM
 
 logger = logging.getLogger("lucidpulls.analyzers.issue")
 
 
+class IssueDict(TypedDict, total=False):
+    """Type definition for GitHub issue dictionaries."""
+
+    number: int
+    title: str
+    body: str
+    labels: list[str]
+    url: str
+    created_at: Optional[str]
+
+
 @dataclass
 class IssueScore:
     """Scored issue for prioritization."""
 
-    issue: dict
+    issue: IssueDict
     score: float
     reason: str
 
@@ -29,7 +41,7 @@ class IssueAnalyzer:
         """
         self.llm = llm
 
-    def prioritize(self, issues: list[dict], limit: int = 5) -> list[dict]:
+    def prioritize(self, issues: list[IssueDict], limit: int = 5) -> list[IssueDict]:
         """Prioritize issues for fixing.
 
         Args:
@@ -51,7 +63,7 @@ class IssueAnalyzer:
 
         return [s.issue for s in scored[:limit]]
 
-    def _score_issue(self, issue: dict) -> IssueScore:
+    def _score_issue(self, issue: IssueDict) -> IssueScore:
         """Score an issue for priority.
 
         Args:
@@ -118,7 +130,7 @@ class IssueAnalyzer:
             reason=", ".join(reasons) if reasons else "no signals",
         )
 
-    def filter_actionable(self, issues: list[dict]) -> list[dict]:
+    def filter_actionable(self, issues: list[IssueDict]) -> list[IssueDict]:
         """Filter issues to only include actionable ones.
 
         Args:

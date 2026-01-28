@@ -1,6 +1,6 @@
 """SQLAlchemy database models."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey, Text
@@ -18,7 +18,7 @@ class ReviewRun(Base):
     __tablename__ = "review_runs"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    started_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
     completed_at = Column(DateTime, nullable=True)
     repos_reviewed = Column(Integer, default=0)
     prs_created = Column(Integer, default=0)
@@ -45,7 +45,7 @@ class PRRecord(Base):
     pr_title = Column(String(500), nullable=True)
     success = Column(Boolean, default=False)
     error = Column(Text, nullable=True)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
 
     # Relationship back to review run
     review_run = relationship("ReviewRun", back_populates="prs")

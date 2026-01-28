@@ -1,9 +1,14 @@
 """Base analyzer interface and data models."""
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+# Constants for file discovery
+MAX_FILES = 50  # Maximum number of files to analyze
+MAX_FILE_SIZE = 100_000  # Maximum file size in bytes (100KB)
+MAX_CHARS_FOR_LLM = 50_000  # Maximum characters to send to LLM
 
 
 @dataclass
@@ -48,12 +53,18 @@ class BaseAnalyzer(ABC):
     """Abstract base class for code analyzers."""
 
     @abstractmethod
-    def analyze(self, repo_path: Path, repo_name: str) -> AnalysisResult:
+    def analyze(
+        self,
+        repo_path: Path,
+        repo_name: str,
+        issues: Optional[list[dict]] = None,
+    ) -> AnalysisResult:
         """Analyze a repository for potential fixes.
 
         Args:
             repo_path: Local path to the cloned repository.
             repo_name: Full repository name (owner/repo).
+            issues: Optional list of open issues to consider.
 
         Returns:
             AnalysisResult with findings.
@@ -64,8 +75,8 @@ class BaseAnalyzer(ABC):
         self,
         repo_path: Path,
         extensions: Optional[list[str]] = None,
-        max_files: int = 50,
-        max_file_size: int = 100_000,
+        max_files: int = MAX_FILES,
+        max_file_size: int = MAX_FILE_SIZE,
     ) -> list[tuple[Path, str]]:
         """Get code files from a repository.
 
@@ -85,36 +96,45 @@ class BaseAnalyzer(ABC):
                 ".c", ".cpp", ".h", ".hpp", ".cs",
             ]
 
+        # Convert to set for O(1) lookup
+        extension_set = set(extensions)
+
         files = []
         skip_dirs = {
             ".git", "node_modules", "__pycache__", ".venv", "venv",
             "dist", "build", ".next", "target", "vendor",
         }
 
-        for ext in extensions:
-            for file_path in repo_path.rglob(f"*{ext}"):
-                # Skip ignored directories
-                if any(skip_dir in file_path.parts for skip_dir in skip_dirs):
+        # Walk the tree once and filter by extension in memory
+        for file_path in repo_path.rglob("*"):
+            # Skip if not a file or wrong extension
+            if not file_path.is_file():
+                continue
+            if file_path.suffix.lower() not in extension_set:
+                continue
+
+            # Skip ignored directories
+            if any(skip_dir in file_path.parts for skip_dir in skip_dirs):
+                continue
+
+            # Skip large files
+            try:
+                if file_path.stat().st_size > max_file_size:
                     continue
 
-                # Skip large files
-                try:
-                    if file_path.stat().st_size > max_file_size:
-                        continue
+                content = file_path.read_text(encoding="utf-8", errors="ignore")
+                rel_path = file_path.relative_to(repo_path)
+                files.append((rel_path, content))
 
-                    content = file_path.read_text(encoding="utf-8", errors="ignore")
-                    rel_path = file_path.relative_to(repo_path)
-                    files.append((rel_path, content))
-
-                    if len(files) >= max_files:
-                        return files
-                except (OSError, UnicodeDecodeError):
-                    continue
+                if len(files) >= max_files:
+                    return files
+            except (OSError, UnicodeDecodeError):
+                continue
 
         return files
 
     def _format_code_for_llm(
-        self, files: list[tuple[Path, str]], max_chars: int = 50_000
+        self, files: list[tuple[Path, str]], max_chars: int = MAX_CHARS_FOR_LLM
     ) -> str:
         """Format code files for LLM consumption.
 

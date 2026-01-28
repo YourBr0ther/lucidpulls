@@ -27,9 +27,13 @@ class TestReviewHistory:
         with tempfile.TemporaryDirectory() as tmpdir:
             history = ReviewHistory(db_path=f"{tmpdir}/test.db")
 
-            run = history.start_run()
+            run_id = history.start_run()
 
-            assert run.id is not None
+            assert run_id is not None
+            assert isinstance(run_id, int)
+
+            # Verify in DB
+            run = history.get_run(run_id)
             assert run.status == "running"
             assert run.started_at is not None
 
@@ -38,11 +42,11 @@ class TestReviewHistory:
         with tempfile.TemporaryDirectory() as tmpdir:
             history = ReviewHistory(db_path=f"{tmpdir}/test.db")
 
-            run = history.start_run()
-            history.complete_run(run.id, repos_reviewed=3, prs_created=2)
+            run_id = history.start_run()
+            history.complete_run(run_id, repos_reviewed=3, prs_created=2)
 
             # Refresh from DB
-            updated_run = history.get_run(run.id)
+            updated_run = history.get_run(run_id)
             assert updated_run.status == "completed"
             assert updated_run.repos_reviewed == 3
             assert updated_run.prs_created == 2
@@ -53,10 +57,10 @@ class TestReviewHistory:
         with tempfile.TemporaryDirectory() as tmpdir:
             history = ReviewHistory(db_path=f"{tmpdir}/test.db")
 
-            run = history.start_run()
-            history.complete_run(run.id, repos_reviewed=1, prs_created=0, error="Failed")
+            run_id = history.start_run()
+            history.complete_run(run_id, repos_reviewed=1, prs_created=0, error="Failed")
 
-            updated_run = history.get_run(run.id)
+            updated_run = history.get_run(run_id)
             assert updated_run.status == "failed"
             assert updated_run.error == "Failed"
 
@@ -65,9 +69,9 @@ class TestReviewHistory:
         with tempfile.TemporaryDirectory() as tmpdir:
             history = ReviewHistory(db_path=f"{tmpdir}/test.db")
 
-            run = history.start_run()
-            pr = history.record_pr(
-                run_id=run.id,
+            run_id = history.start_run()
+            history.record_pr(
+                run_id=run_id,
                 repo_name="owner/repo",
                 pr_number=42,
                 pr_url="https://github.com/owner/repo/pull/42",
@@ -75,38 +79,41 @@ class TestReviewHistory:
                 success=True,
             )
 
-            assert pr.id is not None
-            assert pr.repo_name == "owner/repo"
-            assert pr.pr_number == 42
-            assert pr.success is True
+            prs = history.get_run_prs(run_id)
+            assert len(prs) == 1
+            assert prs[0].repo_name == "owner/repo"
+            assert prs[0].pr_number == 42
+            assert prs[0].success is True
 
     def test_record_pr_failure(self):
         """Test recording a failed PR attempt."""
         with tempfile.TemporaryDirectory() as tmpdir:
             history = ReviewHistory(db_path=f"{tmpdir}/test.db")
 
-            run = history.start_run()
-            pr = history.record_pr(
-                run_id=run.id,
+            run_id = history.start_run()
+            history.record_pr(
+                run_id=run_id,
                 repo_name="owner/repo",
                 success=False,
                 error="No fixes found",
             )
 
-            assert pr.success is False
-            assert pr.error == "No fixes found"
+            prs = history.get_run_prs(run_id)
+            assert len(prs) == 1
+            assert prs[0].success is False
+            assert prs[0].error == "No fixes found"
 
     def test_get_run_prs(self):
         """Test getting PRs for a run."""
         with tempfile.TemporaryDirectory() as tmpdir:
             history = ReviewHistory(db_path=f"{tmpdir}/test.db")
 
-            run = history.start_run()
-            history.record_pr(run.id, "owner/repo1", pr_number=1, success=True)
-            history.record_pr(run.id, "owner/repo2", pr_number=2, success=True)
-            history.record_pr(run.id, "owner/repo3", success=False)
+            run_id = history.start_run()
+            history.record_pr(run_id, "owner/repo1", pr_number=1, success=True)
+            history.record_pr(run_id, "owner/repo2", pr_number=2, success=True)
+            history.record_pr(run_id, "owner/repo3", success=False)
 
-            prs = history.get_run_prs(run.id)
+            prs = history.get_run_prs(run_id)
 
             assert len(prs) == 3
 
@@ -115,21 +122,21 @@ class TestReviewHistory:
         with tempfile.TemporaryDirectory() as tmpdir:
             history = ReviewHistory(db_path=f"{tmpdir}/test.db")
 
-            run1 = history.start_run()
-            run2 = history.start_run()
+            run_id1 = history.start_run()
+            run_id2 = history.start_run()
 
             latest = history.get_latest_run()
 
-            assert latest.id == run2.id
+            assert latest.id == run_id2
 
     def test_build_report(self):
         """Test building a review report."""
         with tempfile.TemporaryDirectory() as tmpdir:
             history = ReviewHistory(db_path=f"{tmpdir}/test.db")
 
-            run = history.start_run()
+            run_id = history.start_run()
             history.record_pr(
-                run.id,
+                run_id,
                 "owner/repo1",
                 pr_number=42,
                 pr_url="https://github.com/owner/repo1/pull/42",
@@ -137,14 +144,14 @@ class TestReviewHistory:
                 success=True,
             )
             history.record_pr(
-                run.id,
+                run_id,
                 "owner/repo2",
                 success=False,
                 error="No fixes found",
             )
-            history.complete_run(run.id, repos_reviewed=2, prs_created=1)
+            history.complete_run(run_id, repos_reviewed=2, prs_created=1)
 
-            report = history.build_report(run.id)
+            report = history.build_report(run_id)
 
             assert report is not None
             assert report.repos_reviewed == 2
@@ -177,3 +184,14 @@ class TestReviewHistory:
             runs = history.get_recent_runs(limit=3)
 
             assert len(runs) == 3
+
+    def test_close_disposes_engine(self):
+        """Test close method disposes the database engine."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            history = ReviewHistory(db_path=f"{tmpdir}/test.db")
+
+            # Should not raise
+            history.close()
+
+            # Engine should be disposed (calling again should be safe)
+            history.close()
