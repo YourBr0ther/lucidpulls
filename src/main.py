@@ -2,10 +2,12 @@
 
 import argparse
 import logging
+import os
 import signal
 import sys
 import threading
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional
 
 import pytz
@@ -180,23 +182,15 @@ class LucidPulls:
             )
             return False
 
-        # Get open issues
+        # Get open issues (used to guide analysis, but not required)
         issues = self.pr_creator.get_open_issues(repo_name)
         issues = self.issue_analyzer.filter_actionable(issues)
         issues = self.issue_analyzer.prioritize(issues, limit=5)
 
-        # Skip LLM analysis if no actionable issues
         if not issues:
-            logger.info(f"No actionable issues for {repo_name}, skipping analysis")
-            self.history.record_pr(
-                run_id,
-                repo_name=repo_name,
-                success=False,
-                error="No actionable issues found",
-            )
-            return False
+            logger.info(f"No actionable issues for {repo_name}, analyzing code only")
 
-        # Analyze code
+        # Analyze code (issues guide the LLM but aren't required)
         result = self.code_analyzer.analyze(
             repo_path=repo_info.local_path,
             repo_name=repo_name,
@@ -218,7 +212,8 @@ class LucidPulls:
 
         # Create branch with sanitized file path
         safe_file = sanitize_branch_name(fix.file_path)
-        branch_name = f"lucidpulls/{datetime.now().strftime('%Y%m%d-%H%M%S')}-{safe_file}"
+        tz = pytz.timezone(self.settings.timezone)
+        branch_name = f"lucidpulls/{datetime.now(tz).strftime('%Y%m%d-%H%M%S')}-{safe_file}"
         if not self.repo_manager.create_branch(repo_info, branch_name):
             self.history.record_pr(
                 run_id,
@@ -306,7 +301,8 @@ class LucidPulls:
             )
             return
 
-        now = datetime.now()
+        tz = pytz.timezone(self.settings.timezone)
+        now = datetime.now(tz)
         report = ReviewReport(
             date=now,
             repos_reviewed=2,
@@ -387,6 +383,26 @@ class LucidPulls:
         # Check LLM availability
         if not self.llm.is_available():
             logger.error(f"LLM provider {self.llm.provider_name} is not available")
+            sys.exit(1)
+
+        # Validate SSH key if configured
+        if self.settings.ssh_key_path:
+            key_path = Path(self.settings.ssh_key_path).expanduser()
+            if not key_path.exists():
+                logger.error(f"SSH key not found: {key_path}")
+                sys.exit(1)
+            if not os.access(key_path, os.R_OK):
+                logger.error(f"SSH key is not readable: {key_path} — check file permissions (should be 600)")
+                sys.exit(1)
+
+        # Validate GitHub token by making a lightweight API call
+        try:
+            from github import Github
+            gh = Github(self.settings.github_token)
+            gh.get_user().login
+            gh.close()
+        except Exception as e:
+            logger.error(f"GitHub token validation failed: {e}")
             sys.exit(1)
 
         # Check notifier configuration

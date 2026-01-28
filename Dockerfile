@@ -3,11 +3,12 @@ FROM python:3.11-slim
 # Set working directory
 WORKDIR /app
 
-# Install git, SSH client, and gosu for entrypoint user switching
+# Install git, SSH client, gosu, and Node.js (for JS/TS syntax validation)
 RUN apt-get update && apt-get install -y \
     git \
     openssh-client \
     gosu \
+    nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user early for safer pip install
