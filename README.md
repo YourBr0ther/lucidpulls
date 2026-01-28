@@ -1,16 +1,42 @@
-# LucidPulls
+<p align="center">
+  <img src="assets/logo.svg" alt="LucidPulls" width="140" height="140">
+</p>
 
-> Code review for bugs while you sleep.
+<h1 align="center">LucidPulls</h1>
+
+<p align="center">
+  <strong>Code review for bugs while you sleep.</strong>
+</p>
+
+<p align="center">
+  <a href="#features">Features</a> •
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#how-it-works">How It Works</a> •
+  <a href="#configuration">Configuration</a> •
+  <a href="#llm-providers">LLM Providers</a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3.11+-3776ab?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT License">
+  <img src="https://img.shields.io/badge/docker-ready-2496ed?style=flat-square&logo=docker&logoColor=white" alt="Docker Ready">
+</p>
+
+---
 
 LucidPulls is an automated nightly code review agent that analyzes your GitHub repositories, identifies bugs and improvement opportunities, creates pull requests with fixes, and delivers a morning summary report.
 
+Wake up to bug fixes, not bug reports.
+
 ## Features
 
-- **Scheduled Nightly Review**: Configurable start time, deadline, and report delivery
-- **Repository Analysis**: Clones/pulls latest code, analyzes for bugs, reviews open issues
-- **Automated PR Creation**: Creates pull requests with conservative, high-confidence fixes
-- **Multiple LLM Backends**: Azure AI Studios, NanoGPT, or Ollama (local)
-- **Notifications**: Morning reports via Discord or Microsoft Teams
+| | Feature | Description |
+|:---:|:---|:---|
+| :crescent_moon: | **Scheduled Nightly Review** | Configurable start time, deadline, and report delivery |
+| :mag: | **Repository Analysis** | Clones/pulls latest code, analyzes for bugs, reviews open issues |
+| :arrows_counterclockwise: | **Automated PR Creation** | Creates pull requests with conservative, high-confidence fixes |
+| :robot: | **Multiple LLM Backends** | Azure AI Studios, NanoGPT, or Ollama (local) |
+| :bell: | **Notifications** | Morning reports via Discord or Microsoft Teams |
 
 ## Quick Start
 
@@ -23,24 +49,81 @@ LucidPulls is an automated nightly code review agent that analyzes your GitHub r
 
 ### Installation
 
-1. Clone the repository:
-   ```bash
-   git clone git@github.com:YourBr0ther/lucidpulls.git
-   cd lucidpulls
-   ```
+```bash
+# Clone the repository
+git clone git@github.com:YourBr0ther/lucidpulls.git
+cd lucidpulls
 
-2. Copy and configure environment:
-   ```bash
-   cp .env.example .env
-   # Edit .env with your configuration
-   ```
+# Copy and configure environment
+cp .env.example .env
 
-3. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+# Install dependencies
+pip install -r requirements.txt
+```
 
-### Configuration
+### Running
+
+```bash
+# Run as a service (scheduled)
+python -m src.main
+
+# Run immediately (for testing)
+python -m src.main --run-now
+
+# Send report only
+python -m src.main --send-report
+
+# Debug mode
+python -m src.main --debug
+```
+
+### Docker Deployment
+
+```bash
+docker-compose up -d        # Build and run
+docker-compose logs -f      # View logs
+docker-compose down         # Stop
+```
+
+## How It Works
+
+```
+                    ┌─────────────────────────────────────────────┐
+                    │              NIGHTLY SCHEDULE                │
+                    │                  02:00 AM                    │
+                    └─────────────────────┬───────────────────────┘
+                                          │
+                    ┌─────────────────────▼───────────────────────┐
+                    │           FOR EACH REPOSITORY               │
+                    │  ┌────────────────────────────────────────┐ │
+                    │  │  1. Clone or pull latest code          │ │
+                    │  │  2. Fetch open issues (bugs/enhance)   │ │
+                    │  │  3. Send to LLM for analysis           │ │
+                    │  │  4. Identify high-confidence fix       │ │
+                    │  │  5. Create branch, commit, push        │ │
+                    │  │  6. Open pull request                  │ │
+                    │  └────────────────────────────────────────┘ │
+                    └─────────────────────┬───────────────────────┘
+                                          │
+                    ┌─────────────────────▼───────────────────────┐
+                    │              MORNING REPORT                  │
+                    │       Summary sent to Discord/Teams          │
+                    │                  07:00 AM                    │
+                    └─────────────────────────────────────────────┘
+```
+
+## Fix Types
+
+LucidPulls focuses on conservative, high-confidence fixes:
+
+- **Null checks** — Missing null/None checks
+- **Error handling** — Uncaught exceptions and error gaps
+- **Off-by-one errors** — Array bounds and loop conditions
+- **Logic typos** — Wrong operators, inverted conditions
+- **Resource leaks** — Unclosed files and connections
+- **Security issues** — Obvious vulnerabilities
+
+## Configuration
 
 Edit `.env` with your settings:
 
@@ -69,63 +152,38 @@ REPORT_DELIVERY=07:00
 TIMEZONE=America/New_York
 ```
 
-### Running
+## LLM Providers
 
-**As a service:**
-```bash
-python -m src.main
-```
-
-**Run immediately (for testing):**
-```bash
-python -m src.main --run-now
-```
-
-**Send report only:**
-```bash
-python -m src.main --send-report
-```
-
-**Debug mode:**
-```bash
-python -m src.main --debug
-```
-
-### Docker Deployment
+<details>
+<summary><strong>Ollama (Local)</strong> — Best for development and self-hosted deployments</summary>
 
 ```bash
-# Build and run
-docker-compose up -d
-
-# View logs
-docker-compose logs -f
-
-# Stop
-docker-compose down
+LLM_PROVIDER=ollama
+OLLAMA_HOST=http://localhost:11434
+OLLAMA_MODEL=codellama
 ```
+</details>
 
-## How It Works
+<details>
+<summary><strong>Azure AI Studios</strong> — For enterprise environments</summary>
 
-1. **Nightly at scheduled time**: LucidPulls starts reviewing configured repositories
-2. **For each repository**:
-   - Clone or pull latest code
-   - Fetch open issues labeled as bugs/enhancements
-   - Send code and issues to LLM for analysis
-   - LLM identifies one high-confidence fix
-   - Apply fix, create branch, commit, push
-   - Open pull request
-3. **Morning report**: Summary of all PRs created sent to Discord/Teams
+```bash
+LLM_PROVIDER=azure
+AZURE_ENDPOINT=https://your-resource.openai.azure.com/
+AZURE_API_KEY=your-key
+AZURE_DEPLOYMENT_NAME=gpt-4
+```
+</details>
 
-## Fix Types
+<details>
+<summary><strong>NanoGPT</strong> — Lightweight API option</summary>
 
-LucidPulls focuses on conservative, high-confidence fixes:
-
-- Missing null/None checks
-- Error handling gaps
-- Off-by-one errors
-- Logic typos (wrong operators, inverted conditions)
-- Resource leaks (unclosed files, connections)
-- Obvious security issues
+```bash
+LLM_PROVIDER=nanogpt
+NANOGPT_API_KEY=your-key
+NANOGPT_MODEL=chatgpt-4o-latest
+```
+</details>
 
 ## Project Structure
 
@@ -150,40 +208,13 @@ lucidpulls/
 ## Testing
 
 ```bash
-# Run all tests
-pytest
-
-# Run with coverage
-pytest --cov=src --cov-report=html
-
-# Run specific test file
-pytest tests/test_analyzers.py
+pytest                              # Run all tests
+pytest --cov=src --cov-report=html  # Run with coverage
+pytest tests/test_analyzers.py     # Run specific test file
 ```
 
-## LLM Providers
+---
 
-### Ollama (Local)
-Best for development and self-hosted deployments:
-```bash
-OLLAMA_HOST=http://localhost:11434
-OLLAMA_MODEL=codellama
-```
-
-### Azure AI Studios
-For enterprise environments:
-```bash
-AZURE_ENDPOINT=https://your-resource.openai.azure.com/
-AZURE_API_KEY=your-key
-AZURE_DEPLOYMENT_NAME=gpt-4
-```
-
-### NanoGPT
-Lightweight API option:
-```bash
-NANOGPT_API_KEY=your-key
-NANOGPT_MODEL=chatgpt-4o-latest
-```
-
-## License
-
-MIT
+<p align="center">
+  <sub>MIT License</sub>
+</p>
