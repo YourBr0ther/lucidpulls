@@ -2,6 +2,7 @@
 
 import logging
 import os
+import shlex
 import shutil
 import time
 from dataclasses import dataclass
@@ -86,7 +87,7 @@ class RepoManager:
 
         # Use StrictHostKeyChecking=yes with pre-populated known_hosts
         os.environ["GIT_SSH_COMMAND"] = (
-            f"ssh -i {self.ssh_key_path} -o StrictHostKeyChecking=yes"
+            f"ssh -i {shlex.quote(str(self.ssh_key_path))} -o StrictHostKeyChecking=yes"
         )
         logger.debug(f"SSH configured with key: {self.ssh_key_path}")
 
@@ -349,20 +350,28 @@ class RepoManager:
             logger.error(f"Failed to push branch {branch_name}: {e}")
             return False
 
-    def cleanup_branch(self, repo_info: RepoInfo, branch_name: str) -> None:
+    def cleanup_branch(self, repo_info: RepoInfo, branch_name: str, remote: bool = False) -> None:
         """Delete a local branch and return to default branch.
 
         Args:
             repo_info: Repository information.
             branch_name: Branch name to delete.
+            remote: If True, also delete the remote branch.
         """
         try:
             repo = repo_info.repo
             repo.git.checkout(repo_info.default_branch)
             repo.git.branch("-D", branch_name)
-            logger.debug(f"Cleaned up branch: {branch_name}")
+            logger.debug(f"Cleaned up local branch: {branch_name}")
         except GitCommandError as e:
-            logger.warning(f"Failed to cleanup branch {branch_name}: {e}")
+            logger.warning(f"Failed to cleanup local branch {branch_name}: {e}")
+
+        if remote:
+            try:
+                repo_info.repo.remotes.origin.push(refspec=f":{branch_name}")
+                logger.debug(f"Cleaned up remote branch: {branch_name}")
+            except GitCommandError as e:
+                logger.warning(f"Failed to cleanup remote branch {branch_name}: {e}")
 
     def close_repo(self, repo_full_name: str) -> None:
         """Close a specific repository and release its resources.

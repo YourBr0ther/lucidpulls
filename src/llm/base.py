@@ -84,10 +84,6 @@ class BaseHTTPLLM(BaseLLM):
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self.close()
 
-    def __del__(self) -> None:
-        """Clean up HTTP client."""
-        self.close()
-
 
 # Common prompts for code review
 CODE_REVIEW_SYSTEM_PROMPT = """You are an expert code reviewer focused on finding and fixing bugs.

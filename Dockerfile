@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.11-slim@sha256:5be45dbade29bebd6886af6b438fd7e0b4eb7b611f39ba62b430263f82de36d2
 
 # Set working directory
 WORKDIR /app
@@ -42,9 +42,9 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 
-# Lightweight health check - verify main process is alive
-HEALTHCHECK --interval=60s --timeout=5s --retries=3 --start-period=30s \
-    CMD gosu lucidpulls python -c "import os, signal; os.kill(1, 0)" || exit 1
+# Health check - verify process is alive and heartbeat is recent
+HEALTHCHECK --interval=60s --timeout=10s --retries=3 --start-period=60s \
+    CMD gosu lucidpulls python -c "import os, signal; os.kill(1, 0); from src.scheduler import check_heartbeat; exit(0 if check_heartbeat() else 1)" || exit 1
 
 # Entrypoint fixes bind-mount permissions then drops to non-root user
 ENTRYPOINT ["entrypoint.sh"]

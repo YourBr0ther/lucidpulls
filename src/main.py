@@ -268,6 +268,8 @@ class LucidPulls:
         )
 
         if not pr_result.success:
+            # Clean up both local and remote branch since push already succeeded
+            self.repo_manager.cleanup_branch(repo_info, branch_name, remote=True)
             self.history.record_pr(
                 run_id,
                 repo_name=repo_name,

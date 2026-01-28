@@ -220,6 +220,15 @@ class CodeAnalyzer(BaseAnalyzer):
                 logger.info(f"Skipping {confidence} confidence fix")
                 return None
 
+            # Parse related_issue robustly — LLMs may return strings, floats, or booleans
+            related_issue = None
+            if data.get("related_issue"):
+                try:
+                    val = int(data["related_issue"])
+                    related_issue = val if val > 0 else None
+                except (ValueError, TypeError):
+                    pass
+
             return FixSuggestion(
                 file_path=file_path_str,
                 bug_description=data["bug_description"],
@@ -229,7 +238,7 @@ class CodeAnalyzer(BaseAnalyzer):
                 pr_title=data["pr_title"],
                 pr_body=data["pr_body"],
                 confidence=confidence,
-                related_issue=int(data["related_issue"]) if data.get("related_issue") and str(data["related_issue"]).isdigit() else None,
+                related_issue=related_issue,
             )
 
         except json.JSONDecodeError as e:

@@ -154,7 +154,3 @@ class TeamsNotifier(BaseNotifier):
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
-
-    def __del__(self):
-        """Clean up HTTP client."""
-        self.close()

@@ -1,7 +1,10 @@
 """Job scheduling for nightly reviews."""
 
 import logging
+import os
+import time as _time
 from datetime import datetime
+from pathlib import Path
 from typing import Callable, Optional
 
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -11,6 +14,36 @@ import pytz
 from src.utils import parse_time_string
 
 logger = logging.getLogger("lucidpulls.scheduler")
+
+# Heartbeat file for health checks — written on start and after each job
+HEARTBEAT_PATH = Path(os.environ.get("HEARTBEAT_PATH", "/app/data/heartbeat"))
+
+
+def _write_heartbeat() -> None:
+    """Write current timestamp to heartbeat file for health checks."""
+    try:
+        HEARTBEAT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        HEARTBEAT_PATH.write_text(str(int(_time.time())))
+    except OSError as e:
+        logger.warning(f"Failed to write heartbeat: {e}")
+
+
+def check_heartbeat(max_age_seconds: int = 3700) -> bool:
+    """Check if the heartbeat file is recent enough.
+
+    Args:
+        max_age_seconds: Maximum age in seconds (default ~1 hour).
+
+    Returns:
+        True if heartbeat is recent.
+    """
+    try:
+        if not HEARTBEAT_PATH.exists():
+            return False
+        ts = int(HEARTBEAT_PATH.read_text().strip())
+        return (_time.time() - ts) < max_age_seconds
+    except (OSError, ValueError):
+        return False
 
 
 class ReviewScheduler:
@@ -40,8 +73,14 @@ class ReviewScheduler:
         """
         hour, minute = parse_time_string(start_time)
 
+        def _review_with_heartbeat() -> None:
+            try:
+                review_func()
+            finally:
+                _write_heartbeat()
+
         self.scheduler.add_job(
-            review_func,
+            _review_with_heartbeat,
             CronTrigger(hour=hour, minute=minute, timezone=self.timezone),
             id=self._review_job_id,
             replace_existing=True,
@@ -63,8 +102,14 @@ class ReviewScheduler:
         """
         hour, minute = parse_time_string(delivery_time)
 
+        def _report_with_heartbeat() -> None:
+            try:
+                report_func()
+            finally:
+                _write_heartbeat()
+
         self.scheduler.add_job(
-            report_func,
+            _report_with_heartbeat,
             CronTrigger(hour=hour, minute=minute, timezone=self.timezone),
             id=self._report_job_id,
             replace_existing=True,
@@ -76,6 +121,7 @@ class ReviewScheduler:
     def start(self) -> None:
         """Start the scheduler (blocking)."""
         logger.info("Starting scheduler...")
+        _write_heartbeat()
         self.scheduler.start()
 
     def stop(self) -> None:
