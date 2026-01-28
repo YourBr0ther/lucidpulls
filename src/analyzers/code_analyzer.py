@@ -2,6 +2,7 @@
 
 import json
 import logging
+import subprocess
 import time
 from pathlib import Path
 from typing import Optional
@@ -253,11 +254,18 @@ class CodeAnalyzer(BaseAnalyzer):
 
             content = file_path.read_text(encoding="utf-8")
 
-            if fix.original_code not in content:
+            # Check for multiple matches
+            match_count = content.count(fix.original_code)
+            if match_count == 0:
                 logger.error(f"Original code not found in {fix.file_path}")
                 return False
+            if match_count > 1:
+                logger.warning(
+                    f"Found {match_count} matches for original code in {fix.file_path}, "
+                    "applying to first match only"
+                )
 
-            # Apply the fix
+            # Apply the fix (only first occurrence)
             new_content = content.replace(fix.original_code, fix.fixed_code, 1)
 
             file_path.write_text(new_content, encoding="utf-8")
@@ -288,13 +296,53 @@ class CodeAnalyzer(BaseAnalyzer):
         suffix = file_path.suffix.lower()
 
         if suffix == ".py":
-            try:
-                import ast
-                content = file_path.read_text(encoding="utf-8")
-                ast.parse(content)
-                return True
-            except SyntaxError:
-                return False
+            return self._validate_python_syntax(file_path)
+        elif suffix in (".js", ".jsx", ".ts", ".tsx"):
+            return self._validate_js_syntax(file_path)
 
-        # For other languages, assume valid (could add more validators)
+        # For other languages, assume valid
         return True
+
+    def _validate_python_syntax(self, file_path: Path) -> bool:
+        """Validate Python syntax.
+
+        Args:
+            file_path: Path to the Python file.
+
+        Returns:
+            True if syntax is valid.
+        """
+        try:
+            import ast
+            content = file_path.read_text(encoding="utf-8")
+            ast.parse(content)
+            return True
+        except SyntaxError:
+            return False
+
+    def _validate_js_syntax(self, file_path: Path) -> bool:
+        """Validate JavaScript/TypeScript syntax using Node.js.
+
+        Args:
+            file_path: Path to the JS/TS file.
+
+        Returns:
+            True if syntax is valid or if Node.js is not available.
+        """
+        try:
+            result = subprocess.run(
+                ["node", "--check", str(file_path)],
+                capture_output=True,
+                timeout=5,
+            )
+            return result.returncode == 0
+        except FileNotFoundError:
+            # Node.js not installed, skip validation
+            logger.debug("Node.js not available for JS/TS syntax validation")
+            return True
+        except subprocess.TimeoutExpired:
+            logger.warning(f"JS syntax validation timed out for {file_path}")
+            return True
+        except Exception as e:
+            logger.debug(f"JS syntax validation failed: {e}")
+            return True

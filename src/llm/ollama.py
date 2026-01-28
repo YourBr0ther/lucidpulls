@@ -6,6 +6,7 @@ from typing import Optional
 import httpx
 
 from src.llm.base import BaseLLM, LLMResponse
+from src.utils import retry
 
 logger = logging.getLogger("lucidpulls.llm.ollama")
 
@@ -34,6 +35,15 @@ class OllamaLLM(BaseLLM):
         Returns:
             LLMResponse with generated content.
         """
+        try:
+            return self._generate_with_retry(prompt, system_prompt)
+        except (httpx.HTTPStatusError, httpx.RequestError) as e:
+            logger.error(f"Ollama request failed after retries: {e}")
+            return LLMResponse(content="", model=self.model)
+
+    @retry(max_attempts=3, delay=2.0, backoff=2.0, exceptions=(httpx.HTTPStatusError, httpx.RequestError))
+    def _generate_with_retry(self, prompt: str, system_prompt: Optional[str] = None) -> LLMResponse:
+        """Internal generate method with retry logic."""
         url = f"{self.host}/api/generate"
 
         payload = {
@@ -47,27 +57,20 @@ class OllamaLLM(BaseLLM):
 
         logger.debug(f"Sending request to Ollama: model={self.model}")
 
-        try:
-            response = self._client.post(url, json=payload)
-            response.raise_for_status()
+        response = self._client.post(url, json=payload)
+        response.raise_for_status()
 
-            data = response.json()
-            content = data.get("response", "")
+        data = response.json()
+        content = data.get("response", "")
 
-            logger.debug(f"Received response: {len(content)} characters")
+        logger.debug(f"Received response: {len(content)} characters")
 
-            return LLMResponse(
-                content=content,
-                model=self.model,
-                tokens_used=data.get("eval_count"),
-                finish_reason=data.get("done_reason"),
-            )
-        except httpx.HTTPStatusError as e:
-            logger.error(f"Ollama HTTP error: {e.response.status_code}")
-            return LLMResponse(content="", model=self.model)
-        except httpx.RequestError as e:
-            logger.error(f"Ollama request error: {e}")
-            return LLMResponse(content="", model=self.model)
+        return LLMResponse(
+            content=content,
+            model=self.model,
+            tokens_used=data.get("eval_count"),
+            finish_reason=data.get("done_reason"),
+        )
 
     def is_available(self) -> bool:
         """Check if Ollama server is available.

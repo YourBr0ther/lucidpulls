@@ -59,6 +59,8 @@ class RepoManager:
         """Configure SSH environment for git operations."""
         if self.ssh_key_path and Path(self.ssh_key_path).exists():
             # Create GIT_SSH_COMMAND to use specific key
+            # Note: StrictHostKeyChecking=no is used to avoid interactive prompts in automation.
+            # For higher security environments, pre-populate known_hosts with GitHub's keys instead.
             os.environ["GIT_SSH_COMMAND"] = (
                 f"ssh -i {self.ssh_key_path} -o StrictHostKeyChecking=no"
             )
@@ -83,6 +85,10 @@ class RepoManager:
             if local_path.exists():
                 logger.info(f"Pulling latest changes for {repo_full_name}")
                 repo = self._pull_repo(local_path, default_branch)
+                if repo is None:
+                    # Pull failed and directory was removed, try fresh clone
+                    logger.info(f"Pull failed, attempting fresh clone for {repo_full_name}")
+                    repo = self._clone_repo(gh_repo.ssh_url, local_path)
             else:
                 logger.info(f"Cloning {repo_full_name}")
                 repo = self._clone_repo(gh_repo.ssh_url, local_path)

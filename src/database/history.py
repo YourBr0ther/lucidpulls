@@ -28,7 +28,9 @@ class ReviewHistory:
 
         self.db_url = f"sqlite:///{db_path}"
         self.engine = create_engine(self.db_url, echo=False)
-        self.SessionLocal = sessionmaker(bind=self.engine)
+        # expire_on_commit=False prevents detached instance errors when accessing
+        # ORM objects after the session closes
+        self.SessionLocal = sessionmaker(bind=self.engine, expire_on_commit=False)
 
         # Create tables if they don't exist
         Base.metadata.create_all(self.engine)

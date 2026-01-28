@@ -6,6 +6,7 @@ from typing import Optional
 import httpx
 
 from src.llm.base import BaseLLM, LLMResponse
+from src.utils import retry
 
 logger = logging.getLogger("lucidpulls.llm.nanogpt")
 
@@ -36,6 +37,15 @@ class NanoGPTLLM(BaseLLM):
         Returns:
             LLMResponse with generated content.
         """
+        try:
+            return self._generate_with_retry(prompt, system_prompt)
+        except (httpx.HTTPStatusError, httpx.RequestError) as e:
+            logger.error(f"NanoGPT request failed after retries: {e}")
+            return LLMResponse(content="", model=self.model)
+
+    @retry(max_attempts=3, delay=2.0, backoff=2.0, exceptions=(httpx.HTTPStatusError, httpx.RequestError))
+    def _generate_with_retry(self, prompt: str, system_prompt: Optional[str] = None) -> LLMResponse:
+        """Internal generate method with retry logic."""
         url = f"{self.BASE_URL}/v1/chat/completions"
 
         messages = []
@@ -56,34 +66,27 @@ class NanoGPTLLM(BaseLLM):
 
         logger.debug(f"Sending request to NanoGPT: model={self.model}")
 
-        try:
-            response = self._client.post(url, json=payload, headers=headers)
-            response.raise_for_status()
+        response = self._client.post(url, json=payload, headers=headers)
+        response.raise_for_status()
 
-            data = response.json()
-            choices = data.get("choices", [])
+        data = response.json()
+        choices = data.get("choices", [])
 
-            if not choices:
-                logger.warning("No choices in NanoGPT response")
-                return LLMResponse(content="", model=self.model)
-
-            content = choices[0].get("message", {}).get("content", "")
-            usage = data.get("usage", {})
-
-            logger.debug(f"Received response: {len(content)} characters")
-
-            return LLMResponse(
-                content=content,
-                model=self.model,
-                tokens_used=usage.get("total_tokens"),
-                finish_reason=choices[0].get("finish_reason"),
-            )
-        except httpx.HTTPStatusError as e:
-            logger.error(f"NanoGPT HTTP error: {e.response.status_code}")
+        if not choices:
+            logger.warning("No choices in NanoGPT response")
             return LLMResponse(content="", model=self.model)
-        except httpx.RequestError as e:
-            logger.error(f"NanoGPT request error: {e}")
-            return LLMResponse(content="", model=self.model)
+
+        content = choices[0].get("message", {}).get("content", "")
+        usage = data.get("usage", {})
+
+        logger.debug(f"Received response: {len(content)} characters")
+
+        return LLMResponse(
+            content=content,
+            model=self.model,
+            tokens_used=usage.get("total_tokens"),
+            finish_reason=choices[0].get("finish_reason"),
+        )
 
     def is_available(self) -> bool:
         """Check if NanoGPT is available.

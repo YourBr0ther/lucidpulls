@@ -7,7 +7,10 @@ import sys
 from datetime import datetime
 from typing import Optional
 
+import pytz
+
 from src import setup_logging
+from src.utils import sanitize_branch_name
 from src.config import get_settings, Settings
 from src.database import ReviewHistory
 from src.git import RepoManager, PRCreator
@@ -156,8 +159,20 @@ class LucidPulls:
         fix = result.fix
         logger.info(f"Found fix: {fix.pr_title}")
 
-        # Create branch
-        branch_name = f"lucidpulls/{datetime.now().strftime('%Y%m%d')}-{fix.file_path.replace('/', '-')}"
+        # Check for existing LucidPulls PR
+        if self.pr_creator.has_open_lucidpulls_pr(repo_name):
+            logger.info(f"Skipping {repo_name}: existing LucidPulls PR found")
+            self.history.record_pr(
+                self._current_run_id,
+                repo_name=repo_name,
+                success=False,
+                error="Existing LucidPulls PR already open",
+            )
+            return False
+
+        # Create branch with sanitized file path
+        safe_file = sanitize_branch_name(fix.file_path)
+        branch_name = f"lucidpulls/{datetime.now().strftime('%Y%m%d')}-{safe_file}"
         if not self.repo_manager.create_branch(repo_info, branch_name):
             self.history.record_pr(
                 self._current_run_id,
@@ -241,6 +256,13 @@ class LucidPulls:
         run = self.history.get_latest_run()
         if not run:
             logger.warning("No review runs found for report")
+            return
+
+        # Only send if run completed today
+        today = datetime.now(pytz.timezone(self.settings.timezone)).date()
+        run_date = run.started_at.date()
+        if run_date != today:
+            logger.info(f"Latest run was on {run_date}, skipping report for today")
             return
 
         # Build and send report

@@ -6,6 +6,7 @@ from typing import Optional
 import httpx
 
 from src.llm.base import BaseLLM, LLMResponse
+from src.utils import retry
 
 logger = logging.getLogger("lucidpulls.llm.azure")
 
@@ -44,6 +45,15 @@ class AzureLLM(BaseLLM):
         Returns:
             LLMResponse with generated content.
         """
+        try:
+            return self._generate_with_retry(prompt, system_prompt)
+        except (httpx.HTTPStatusError, httpx.RequestError) as e:
+            logger.error(f"Azure request failed after retries: {e}")
+            return LLMResponse(content="", model=self.deployment_name)
+
+    @retry(max_attempts=3, delay=2.0, backoff=2.0, exceptions=(httpx.HTTPStatusError, httpx.RequestError))
+    def _generate_with_retry(self, prompt: str, system_prompt: Optional[str] = None) -> LLMResponse:
+        """Internal generate method with retry logic."""
         url = (
             f"{self.endpoint}/openai/deployments/{self.deployment_name}"
             f"/chat/completions?api-version={self.api_version}"
@@ -67,34 +77,27 @@ class AzureLLM(BaseLLM):
 
         logger.debug(f"Sending request to Azure: deployment={self.deployment_name}")
 
-        try:
-            response = self._client.post(url, json=payload, headers=headers)
-            response.raise_for_status()
+        response = self._client.post(url, json=payload, headers=headers)
+        response.raise_for_status()
 
-            data = response.json()
-            choices = data.get("choices", [])
+        data = response.json()
+        choices = data.get("choices", [])
 
-            if not choices:
-                logger.warning("No choices in Azure response")
-                return LLMResponse(content="", model=self.deployment_name)
-
-            content = choices[0].get("message", {}).get("content", "")
-            usage = data.get("usage", {})
-
-            logger.debug(f"Received response: {len(content)} characters")
-
-            return LLMResponse(
-                content=content,
-                model=self.deployment_name,
-                tokens_used=usage.get("total_tokens"),
-                finish_reason=choices[0].get("finish_reason"),
-            )
-        except httpx.HTTPStatusError as e:
-            logger.error(f"Azure HTTP error: {e.response.status_code}")
+        if not choices:
+            logger.warning("No choices in Azure response")
             return LLMResponse(content="", model=self.deployment_name)
-        except httpx.RequestError as e:
-            logger.error(f"Azure request error: {e}")
-            return LLMResponse(content="", model=self.deployment_name)
+
+        content = choices[0].get("message", {}).get("content", "")
+        usage = data.get("usage", {})
+
+        logger.debug(f"Received response: {len(content)} characters")
+
+        return LLMResponse(
+            content=content,
+            model=self.deployment_name,
+            tokens_used=usage.get("total_tokens"),
+            finish_reason=choices[0].get("finish_reason"),
+        )
 
     def is_available(self) -> bool:
         """Check if Azure OpenAI is available.
