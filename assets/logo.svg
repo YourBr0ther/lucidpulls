@@ -24,11 +24,18 @@
   <!-- Moon crescent -->
   <path d="M75 30 A30 30 0 1 0 75 90 A24 24 0 1 1 75 30" fill="url(#moonGradient)" opacity="0.9"/>
 
-  <!-- Stars -->
-  <circle cx="35" cy="35" r="2" fill="#fcd34d" filter="url(#glow)"/>
-  <circle cx="28" cy="55" r="1.5" fill="#fcd34d" filter="url(#glow)"/>
-  <circle cx="40" cy="70" r="1" fill="#fcd34d" filter="url(#glow)"/>
-  <circle cx="32" cy="82" r="1.5" fill="#fcd34d" filter="url(#glow)"/>
+  <!-- Stars scattered throughout -->
+  <circle cx="25" cy="30" r="2" fill="#fcd34d" filter="url(#glow)"/>
+  <circle cx="18" cy="50" r="1.5" fill="#fcd34d" filter="url(#glow)"/>
+  <circle cx="22" cy="75" r="1" fill="#fcd34d" filter="url(#glow)"/>
+  <circle cx="30" cy="95" r="1.5" fill="#fcd34d" filter="url(#glow)"/>
+  <circle cx="50" cy="20" r="1" fill="#fcd34d" filter="url(#glow)"/>
+  <circle cx="75" cy="25" r="1.5" fill="#fcd34d" filter="url(#glow)"/>
+  <circle cx="95" cy="45" r="2" fill="#fcd34d" filter="url(#glow)"/>
+  <circle cx="100" cy="70" r="1" fill="#fcd34d" filter="url(#glow)"/>
+  <circle cx="90" cy="90" r="1.5" fill="#fcd34d" filter="url(#glow)"/>
+  <circle cx="60" cy="100" r="1" fill="#fcd34d" filter="url(#glow)"/>
+  <circle cx="40" cy="15" r="1" fill="#fcd34d" filter="url(#glow)"/>
 
   <!-- Code brackets representing PR/code review -->
   <g filter="url(#glow)">
@@ -44,8 +51,8 @@
 
   <!-- Z's for sleeping -->
   <g fill="#a5b4fc" font-family="monospace" font-weight="bold" opacity="0.8">
-    <text x="85" y="28" font-size="10">z</text>
-    <text x="92" y="22" font-size="8">z</text>
-    <text x="97" y="17" font-size="6">z</text>
+    <text x="80" y="48" font-size="10">z</text>
+    <text x="88" y="40" font-size="8">z</text>
+    <text x="94" y="34" font-size="6">z</text>
   </g>
 </svg>
