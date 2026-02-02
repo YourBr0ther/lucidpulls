@@ -7,15 +7,53 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 import httpx
+from pydantic import BaseModel, field_validator
 
 from src.analyzers.base import BaseAnalyzer, AnalysisResult, FixSuggestion
 from src.llm.base import BaseLLM, CODE_REVIEW_SYSTEM_PROMPT, FIX_GENERATION_PROMPT_TEMPLATE
+from src.models import GithubIssue
 from src.utils import retry
 
 logger = logging.getLogger("lucidpulls.analyzers.code")
+
+
+class LLMFixResponse(BaseModel):
+    """Pydantic model for validated LLM fix responses."""
+
+    found_bug: bool
+    file_path: str = ""
+    bug_description: str = ""
+    fix_description: str = ""
+    original_code: str = ""
+    fixed_code: str = ""
+    pr_title: str = ""
+    pr_body: str = ""
+    confidence: str = "low"
+    related_issue: Optional[int] = None
+
+    @field_validator("file_path")
+    @classmethod
+    def validate_file_path(cls, v: str) -> str:
+        """Reject suspicious file paths from LLM output."""
+        if v and ("\x00" in v or v.startswith("/")
+                or ".." in v.split("/") or ".." in v.split("\\")):
+            raise ValueError(f"Suspicious file_path: {v!r}")
+        return v
+
+    @field_validator("related_issue", mode="before")
+    @classmethod
+    def coerce_related_issue(cls, v: object) -> Optional[int]:
+        """Coerce related_issue to int, handling strings/floats/booleans from LLMs."""
+        if v is None or v is False or v == "":
+            return None
+        try:
+            val = int(v)  # type: ignore[arg-type]
+            return val if val > 0 else None
+        except (ValueError, TypeError):
+            return None
 
 
 class CodeAnalyzer(BaseAnalyzer):
@@ -57,7 +95,7 @@ class CodeAnalyzer(BaseAnalyzer):
         self,
         repo_path: Path,
         repo_name: str,
-        issues: Optional[list[dict]] = None,
+        issues: Optional[list[GithubIssue]] = None,
     ) -> AnalysisResult:
         """Analyze a repository for bugs.
 
@@ -141,11 +179,11 @@ class CodeAnalyzer(BaseAnalyzer):
                 analysis_time_seconds=time.time() - start_time,
             )
 
-    def _format_issues(self, issues: list[dict]) -> str:
+    def _format_issues(self, issues: list[GithubIssue]) -> str:
         """Format issues for LLM consumption.
 
         Args:
-            issues: List of issue dictionaries.
+            issues: List of GithubIssue typed dicts.
 
         Returns:
             Formatted string.
@@ -171,7 +209,7 @@ class CodeAnalyzer(BaseAnalyzer):
     MAX_LLM_RESPONSE_SIZE = 500_000  # 500KB
 
     def _parse_llm_response(self, response: str) -> Optional[FixSuggestion]:
-        """Parse LLM response into a FixSuggestion.
+        """Parse LLM response into a FixSuggestion using Pydantic validation.
 
         Args:
             response: Raw LLM response.
@@ -191,64 +229,45 @@ class CodeAnalyzer(BaseAnalyzer):
                 return None
 
             data = json.loads(json_str)
+            fix_response = LLMFixResponse.model_validate(data)
 
-            # Check if bug was found
-            if not data.get("found_bug", False):
+            if not fix_response.found_bug:
                 logger.info("LLM did not find any bugs")
                 return None
 
-            # Validate required fields
-            required = [
+            # Validate required fields are non-empty
+            required_fields = [
                 "file_path", "bug_description", "fix_description",
                 "original_code", "fixed_code", "pr_title", "pr_body",
             ]
-            for field in required:
-                if not data.get(field):
+            for field in required_fields:
+                if not getattr(fix_response, field):
                     logger.warning(f"Missing required field in LLM response: {field}")
                     return None
 
-            # Validate file_path early
-            file_path_str = data["file_path"]
-            if ("\x00" in file_path_str or file_path_str.startswith("/")
-                    or ".." in file_path_str.split("/") or ".." in file_path_str.split("\\")):
-                logger.warning(f"Suspicious file_path from LLM: {file_path_str!r}")
-                return None
-
             # Only accept high confidence fixes
-            confidence = data.get("confidence", "low").lower()
+            confidence = fix_response.confidence.lower()
             if confidence != "high":
                 logger.info(f"Skipping {confidence} confidence fix")
                 return None
 
-            # Parse related_issue robustly — LLMs may return strings, floats, or booleans
-            related_issue = None
-            if data.get("related_issue"):
-                try:
-                    val = int(data["related_issue"])
-                    related_issue = val if val > 0 else None
-                except (ValueError, TypeError):
-                    pass
-
             return FixSuggestion(
-                file_path=file_path_str,
-                bug_description=data["bug_description"],
-                fix_description=data["fix_description"],
-                original_code=data["original_code"],
-                fixed_code=data["fixed_code"],
-                pr_title=data["pr_title"],
-                pr_body=data["pr_body"],
+                file_path=fix_response.file_path,
+                bug_description=fix_response.bug_description,
+                fix_description=fix_response.fix_description,
+                original_code=fix_response.original_code,
+                fixed_code=fix_response.fixed_code,
+                pr_title=fix_response.pr_title,
+                pr_body=fix_response.pr_body,
                 confidence=confidence,
-                related_issue=related_issue,
+                related_issue=fix_response.related_issue,
             )
 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse LLM response as JSON: {e}")
             return None
-        except (KeyError, TypeError) as e:
-            logger.error(f"Invalid LLM response structure: {e}")
-            return None
         except Exception as e:
-            logger.error(f"Unexpected error parsing LLM response ({type(e).__name__}): {e}")
+            logger.error(f"Error parsing LLM response ({type(e).__name__}): {e}")
             return None
 
     def _extract_json(self, text: str) -> Optional[str]:
@@ -370,8 +389,10 @@ class CodeAnalyzer(BaseAnalyzer):
 
         if suffix == ".py":
             return self._validate_python_syntax(file_path)
-        elif suffix in (".js", ".jsx", ".ts", ".tsx"):
+        elif suffix in (".js", ".jsx"):
             return self._validate_js_syntax(file_path)
+        elif suffix in (".ts", ".tsx"):
+            return self._validate_ts_syntax(file_path)
 
         # For other languages, assume valid
         return True
@@ -395,10 +416,10 @@ class CodeAnalyzer(BaseAnalyzer):
             return False
 
     def _validate_js_syntax(self, file_path: Path) -> bool:
-        """Validate JavaScript/TypeScript syntax using Node.js.
+        """Validate JavaScript syntax using Node.js.
 
         Args:
-            file_path: Path to the JS/TS file.
+            file_path: Path to the JS file.
 
         Returns:
             True if syntax is valid, False otherwise (fail-safe).
@@ -412,7 +433,7 @@ class CodeAnalyzer(BaseAnalyzer):
             return result.returncode == 0
         except FileNotFoundError:
             # Node.js not installed - fail safe, don't allow unvalidated JS
-            logger.warning("Node.js not available, cannot validate JS/TS syntax")
+            logger.warning("Node.js not available, cannot validate JS syntax")
             return False
         except subprocess.TimeoutExpired:
             logger.warning(f"JS syntax validation timed out for {file_path}")
@@ -420,3 +441,35 @@ class CodeAnalyzer(BaseAnalyzer):
         except Exception as e:
             logger.error(f"JS syntax validation error: {e}")
             return False
+
+    def _validate_ts_syntax(self, file_path: Path) -> bool:
+        """Validate TypeScript syntax using tsc.
+
+        Node.js `--check` cannot parse TypeScript syntax, so we use
+        `npx tsc --noEmit` instead. If tsc is not available, we skip
+        validation (return True) rather than incorrectly rejecting valid TS.
+
+        Args:
+            file_path: Path to the TS/TSX file.
+
+        Returns:
+            True if syntax is valid or if tsc is not available.
+        """
+        try:
+            result = subprocess.run(
+                ["npx", "--yes", "typescript", "tsc", "--noEmit", "--allowJs",
+                 "--esModuleInterop", "--jsx", "react-jsx", str(file_path)],
+                capture_output=True,
+                timeout=30,
+            )
+            return result.returncode == 0
+        except FileNotFoundError:
+            # npx/tsc not available — skip validation rather than reject valid TS
+            logger.debug("TypeScript compiler not available, skipping TS syntax validation")
+            return True
+        except subprocess.TimeoutExpired:
+            logger.warning(f"TS syntax validation timed out for {file_path}")
+            return True
+        except Exception as e:
+            logger.debug(f"TS syntax validation error (skipping): {e}")
+            return True

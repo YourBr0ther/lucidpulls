@@ -231,6 +231,89 @@ class TestTeamsNotifier:
         assert card["type"] == "AdaptiveCard"
 
 
+class TestDiscordRetry:
+    """Tests for Discord notification retry."""
+
+    @patch("time.sleep")
+    @patch.object(httpx.Client, "post")
+    def test_retries_on_http_error(self, mock_post, mock_sleep):
+        """Test that send_report retries on HTTP errors."""
+        # First two calls raise 500, third succeeds
+        error_response = Mock(status_code=500)
+        error_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Server Error", request=Mock(), response=error_response
+        )
+        success_response = Mock(status_code=204)
+        success_response.raise_for_status = Mock()
+        mock_post.side_effect = [error_response, error_response, success_response]
+
+        notifier = DiscordNotifier(webhook_url="https://discord.com/api/webhooks/123/abc")
+        report = ReviewReport(
+            date=datetime.now(),
+            repos_reviewed=1,
+            prs_created=0,
+            prs=[],
+            start_time=datetime(2024, 1, 1, 2, 0),
+            end_time=datetime(2024, 1, 1, 3, 0),
+        )
+
+        result = notifier.send_report(report)
+        assert result.success is True
+        assert mock_post.call_count == 3
+        assert mock_sleep.call_count == 2
+
+    @patch("time.sleep")
+    @patch.object(httpx.Client, "post")
+    def test_fails_after_max_retries(self, mock_post, mock_sleep):
+        """Test that send_report fails after exhausting retries."""
+        error_response = Mock(status_code=500)
+        error_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Server Error", request=Mock(), response=error_response
+        )
+        mock_post.return_value = error_response
+
+        notifier = DiscordNotifier(webhook_url="https://discord.com/api/webhooks/123/abc")
+        report = ReviewReport(
+            date=datetime.now(),
+            repos_reviewed=1,
+            prs_created=0,
+            prs=[],
+            start_time=datetime(2024, 1, 1, 2, 0),
+            end_time=datetime(2024, 1, 1, 3, 0),
+        )
+
+        result = notifier.send_report(report)
+        assert result.success is False
+        assert mock_post.call_count == 3
+
+
+class TestTeamsRetry:
+    """Tests for Teams notification retry."""
+
+    @patch("time.sleep")
+    @patch.object(httpx.Client, "post")
+    def test_retries_on_request_error(self, mock_post, mock_sleep):
+        """Test that send_report retries on request errors."""
+        mock_post.side_effect = [
+            httpx.RequestError("Connection refused", request=Mock()),
+            Mock(status_code=200, raise_for_status=Mock()),
+        ]
+
+        notifier = TeamsNotifier(webhook_url="https://outlook.office.com/webhook/123")
+        report = ReviewReport(
+            date=datetime.now(),
+            repos_reviewed=1,
+            prs_created=0,
+            prs=[],
+            start_time=datetime(2024, 1, 1, 2, 0),
+            end_time=datetime(2024, 1, 1, 3, 0),
+        )
+
+        result = notifier.send_report(report)
+        assert result.success is True
+        assert mock_post.call_count == 2
+
+
 class TestGetNotifier:
     """Tests for get_notifier factory function."""
 

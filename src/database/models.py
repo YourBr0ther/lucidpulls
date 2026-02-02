@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey, Text
+from sqlalchemy import Column, Float, Integer, String, DateTime, Boolean, ForeignKey, Text
 from sqlalchemy.orm import DeclarativeBase, relationship
 
 
@@ -45,6 +45,8 @@ class PRRecord(Base):
     pr_title = Column(String(500), nullable=True)
     success = Column(Boolean, default=False)
     error = Column(Text, nullable=True)
+    analysis_time = Column(Float, nullable=True)
+    llm_tokens_used = Column(Integer, nullable=True)
     created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
 
     # Relationship back to review run

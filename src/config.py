@@ -125,10 +125,34 @@ class Settings(BaseSettings):
         description="Directory to clone repositories into",
     )
 
+    # Disk space management
+    max_clone_disk_mb: int = Field(
+        default=5000,
+        description="Maximum disk usage for cloned repos in MB (0 = unlimited)",
+    )
+
+    # Concurrency
+    max_workers: int = Field(
+        default=3,
+        description="Number of concurrent repo processing workers",
+        ge=1,
+        le=16,
+    )
+
+    # Runtime flags
+    dry_run: bool = Field(
+        default=False,
+        description="Log what would happen without pushing branches or creating PRs",
+    )
+
     # Logging
     log_level: str = Field(
         default="INFO",
         description="Logging level",
+    )
+    log_format: Literal["text", "json"] = Field(
+        default="text",
+        description="Log output format: 'text' for human-readable, 'json' for structured",
     )
 
     @field_validator("ssh_key_path")
@@ -189,6 +213,53 @@ class Settings(BaseSettings):
             )
         return self
 
+    @model_validator(mode="after")
+    def validate_llm_provider_config(self) -> "Settings":
+        """Validate that the selected LLM provider has all required fields populated."""
+        provider = self.llm_provider
+
+        required_fields: dict[str, list[tuple[str, str]]] = {
+            "azure": [
+                ("azure_endpoint", "Azure endpoint URL"),
+                ("azure_api_key", "Azure API key"),
+            ],
+            "nanogpt": [
+                ("nanogpt_api_key", "NanoGPT API key"),
+                ("nanogpt_model", "NanoGPT model name"),
+            ],
+            "ollama": [
+                ("ollama_host", "Ollama host URL"),
+                ("ollama_model", "Ollama model name"),
+            ],
+        }
+
+        missing = []
+        for field_name, description in required_fields.get(provider, []):
+            if not getattr(self, field_name):
+                missing.append(description)
+
+        if missing:
+            raise ValueError(
+                f"LLM provider '{provider}' is missing required configuration: "
+                f"{', '.join(missing)}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_notification_config(self) -> "Settings":
+        """Validate that the selected notification channel has required fields."""
+        channel = self.notification_channel
+
+        if channel == "teams" and not self.teams_webhook_url:
+            raise ValueError(
+                "Notification channel 'teams' requires teams_webhook_url to be set"
+            )
+        elif channel == "discord" and not self.discord_webhook_url:
+            raise ValueError(
+                "Notification channel 'discord' requires discord_webhook_url to be set"
+            )
+        return self
+
     @property
     def repo_list(self) -> list[str]:
         """Get list of repositories from comma-separated string."""
@@ -238,19 +309,3 @@ def load_settings() -> Settings:
         Settings instance with values from environment.
     """
     return Settings()
-
-
-# Module-level singleton for convenience
-_settings: Settings | None = None
-
-
-def get_settings() -> Settings:
-    """Get or create the global settings instance.
-
-    Returns:
-        Cached Settings instance.
-    """
-    global _settings
-    if _settings is None:
-        _settings = load_settings()
-    return _settings

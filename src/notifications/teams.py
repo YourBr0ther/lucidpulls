@@ -4,7 +4,9 @@ import logging
 
 import httpx
 
-from src.notifications.base import BaseNotifier, NotificationResult, ReviewReport
+from src.models import ReviewReport
+from src.notifications.base import BaseNotifier, NotificationResult
+from src.utils import retry
 
 logger = logging.getLogger("lucidpulls.notifications.teams")
 
@@ -35,8 +37,7 @@ class TeamsNotifier(BaseNotifier):
 
         try:
             payload = self._build_teams_payload(report)
-            response = self._client.post(self.webhook_url, json=payload)
-            response.raise_for_status()
+            self._send_with_retry(payload)
 
             logger.info("Successfully sent report to Teams")
             return NotificationResult(success=True)
@@ -49,6 +50,12 @@ class TeamsNotifier(BaseNotifier):
             error = f"Teams request error: {e}"
             logger.error(error)
             return NotificationResult(success=False, error=error)
+
+    @retry(max_attempts=3, delay=2.0, backoff=2.0,
+           exceptions=(httpx.HTTPStatusError, httpx.RequestError))
+    def _send_with_retry(self, payload: dict) -> None:
+        response = self._client.post(self.webhook_url, json=payload)
+        response.raise_for_status()
 
     def _build_teams_payload(self, report: ReviewReport) -> dict:
         """Build Teams Adaptive Card payload.

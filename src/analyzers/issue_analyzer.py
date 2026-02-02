@@ -3,29 +3,18 @@
 import logging
 from dataclasses import dataclass
 from typing import Optional
-from typing import TypedDict
 
 from src.llm.base import BaseLLM
+from src.models import GithubIssue
 
 logger = logging.getLogger("lucidpulls.analyzers.issue")
-
-
-class IssueDict(TypedDict, total=False):
-    """Type definition for GitHub issue dictionaries."""
-
-    number: int
-    title: str
-    body: str
-    labels: list[str]
-    url: str
-    created_at: Optional[str]
 
 
 @dataclass
 class IssueScore:
     """Scored issue for prioritization."""
 
-    issue: IssueDict
+    issue: GithubIssue
     score: float
     reason: str
 
@@ -41,11 +30,11 @@ class IssueAnalyzer:
         """
         self.llm = llm
 
-    def prioritize(self, issues: list[IssueDict], limit: int = 5) -> list[IssueDict]:
+    def prioritize(self, issues: list[GithubIssue], limit: int = 5) -> list[GithubIssue]:
         """Prioritize issues for fixing.
 
         Args:
-            issues: List of issue dictionaries.
+            issues: List of GithubIssue typed dicts.
             limit: Maximum number of issues to return.
 
         Returns:
@@ -63,11 +52,11 @@ class IssueAnalyzer:
 
         return [s.issue for s in scored[:limit]]
 
-    def _score_issue(self, issue: IssueDict) -> IssueScore:
+    def _score_issue(self, issue: GithubIssue) -> IssueScore:
         """Score an issue for priority.
 
         Args:
-            issue: Issue dictionary.
+            issue: GithubIssue typed dict.
 
         Returns:
             IssueScore with priority score.
@@ -121,20 +110,17 @@ class IssueAnalyzer:
             score -= 0.5
             reasons.append("short description")
 
-        # Penalize very old issues (might be stale)
-        # Note: would need to parse created_at properly for this
-
         return IssueScore(
             issue=issue,
             score=max(0, score),
             reason=", ".join(reasons) if reasons else "no signals",
         )
 
-    def filter_actionable(self, issues: list[IssueDict]) -> list[IssueDict]:
+    def filter_actionable(self, issues: list[GithubIssue]) -> list[GithubIssue]:
         """Filter issues to only include actionable ones.
 
         Args:
-            issues: List of issue dictionaries.
+            issues: List of GithubIssue typed dicts.
 
         Returns:
             Filtered list of actionable issues.

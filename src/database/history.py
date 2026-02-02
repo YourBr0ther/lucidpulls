@@ -9,7 +9,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session, joinedload
 
 from src.database.models import Base, ReviewRun, PRRecord
-from src.notifications.base import PRSummary, ReviewReport
+from src.models import PRSummary, ReviewReport
 
 logger = logging.getLogger("lucidpulls.database.history")
 
@@ -32,9 +32,35 @@ class ReviewHistory:
         # ORM objects after the session closes
         self.SessionLocal = sessionmaker(bind=self.engine, expire_on_commit=False)
 
-        # Create tables if they don't exist
-        Base.metadata.create_all(self.engine)
+        # Run Alembic migrations (handles fresh, stamped, and upgrade cases)
+        self._run_migrations()
         logger.debug(f"Database initialized at {db_path}")
+
+    def _run_migrations(self) -> None:
+        """Run Alembic migrations to ensure schema is up to date.
+
+        Handles three cases:
+        - Fresh DB: runs all migrations from scratch.
+        - Existing DB with alembic_version: normal upgrade to head.
+        - Existing DB without alembic_version: stamps at 0001, then upgrades.
+        """
+        from alembic.config import Config
+        from alembic import command
+        from sqlalchemy import inspect
+
+        alembic_cfg = Config()
+        migrations_dir = str(Path(__file__).parent.parent.parent / "migrations")
+        alembic_cfg.set_main_option("script_location", migrations_dir)
+        alembic_cfg.set_main_option("sqlalchemy.url", self.db_url)
+        alembic_cfg.attributes["engine"] = self.engine
+
+        inspector = inspect(self.engine)
+        tables = inspector.get_table_names()
+        if tables and "alembic_version" not in tables:
+            # Existing DB created before Alembic was added — stamp current revision
+            command.stamp(alembic_cfg, "0001")
+
+        command.upgrade(alembic_cfg, "head")
 
     def start_run(self) -> int:
         """Start a new review run.
@@ -61,7 +87,7 @@ class ReviewHistory:
         repos_reviewed: int,
         prs_created: int,
         error: Optional[str] = None,
-    ) -> None:
+    ) -> bool:
         """Complete a review run.
 
         Args:
@@ -69,6 +95,9 @@ class ReviewHistory:
             repos_reviewed: Number of repos reviewed.
             prs_created: Number of PRs created.
             error: Optional error message if run failed.
+
+        Returns:
+            True if the database write succeeded.
         """
         try:
             with self.SessionLocal() as session:
@@ -82,8 +111,10 @@ class ReviewHistory:
                     session.commit()
 
                     logger.info(f"Completed review run #{run_id}: {run.status}")
+            return True
         except Exception as e:
             logger.error(f"Failed to complete run #{run_id}: {e}")
+            return False
 
     def record_pr(
         self,
@@ -94,7 +125,9 @@ class ReviewHistory:
         pr_title: Optional[str] = None,
         success: bool = False,
         error: Optional[str] = None,
-    ) -> None:
+        analysis_time: Optional[float] = None,
+        llm_tokens_used: Optional[int] = None,
+    ) -> bool:
         """Record a PR creation result.
 
         Args:
@@ -105,6 +138,11 @@ class ReviewHistory:
             pr_title: PR title if created.
             success: Whether PR was created successfully.
             error: Error message if failed.
+            analysis_time: Time spent on analysis in seconds.
+            llm_tokens_used: Number of LLM tokens consumed.
+
+        Returns:
+            True if the database write succeeded.
         """
         try:
             with self.SessionLocal() as session:
@@ -116,14 +154,18 @@ class ReviewHistory:
                     pr_title=pr_title,
                     success=success,
                     error=error,
+                    analysis_time=analysis_time,
+                    llm_tokens_used=llm_tokens_used,
                 )
                 session.add(record)
                 session.commit()
 
                 status = "success" if success else "skipped"
                 logger.debug(f"Recorded PR for {repo_name}: {status}")
+            return True
         except Exception as e:
             logger.error(f"Failed to record PR for {repo_name}: {e}")
+            return False
 
     def get_run(self, run_id: int) -> Optional[ReviewRun]:
         """Get a specific review run by ID.

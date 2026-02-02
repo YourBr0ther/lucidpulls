@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+from sqlalchemy import create_engine, inspect, text
 
 from src.database.models import Base, ReviewRun, PRRecord
 from src.database.history import ReviewHistory
@@ -195,3 +196,57 @@ class TestReviewHistory:
 
             # Engine should be disposed (calling again should be safe)
             history.close()
+
+
+class TestAlembicMigrations:
+    """Tests for Alembic migration integration."""
+
+    def test_fresh_db_runs_migrations(self):
+        """Test that a fresh database gets all tables via migrations."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = f"{tmpdir}/fresh.db"
+            history = ReviewHistory(db_path=db_path)
+
+            inspector = inspect(history.engine)
+            tables = inspector.get_table_names()
+            assert "review_runs" in tables
+            assert "pr_records" in tables
+            assert "alembic_version" in tables
+            history.close()
+
+    def test_existing_db_gets_stamped(self):
+        """Test that an existing DB without alembic_version gets stamped."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = f"{tmpdir}/existing.db"
+            # Create tables the old way (without Alembic)
+            engine = create_engine(f"sqlite:///{db_path}")
+            Base.metadata.create_all(engine)
+            engine.dispose()
+
+            # Now open with ReviewHistory — should stamp and upgrade
+            history = ReviewHistory(db_path=db_path)
+
+            inspector = inspect(history.engine)
+            tables = inspector.get_table_names()
+            assert "alembic_version" in tables
+
+            # Verify stamp is at 0001
+            with history.engine.connect() as conn:
+                result = conn.execute(text("SELECT version_num FROM alembic_version"))
+                version = result.scalar()
+                assert version == "0001"
+            history.close()
+
+    def test_migration_idempotent(self):
+        """Test that running migrations twice is safe."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = f"{tmpdir}/idem.db"
+            history1 = ReviewHistory(db_path=db_path)
+            history1.start_run()
+            history1.close()
+
+            # Open again — should not fail
+            history2 = ReviewHistory(db_path=db_path)
+            run_id = history2.start_run()
+            assert run_id is not None
+            history2.close()

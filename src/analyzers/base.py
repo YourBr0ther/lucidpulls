@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from src.models import GithubIssue
+
 # Constants for file discovery
 MAX_FILES = 50  # Maximum number of files to analyze
 MAX_FILE_SIZE = 100_000  # Maximum file size in bytes (100KB)
@@ -57,7 +59,7 @@ class BaseAnalyzer(ABC):
         self,
         repo_path: Path,
         repo_name: str,
-        issues: Optional[list[dict]] = None,
+        issues: Optional[list[GithubIssue]] = None,
     ) -> AnalysisResult:
         """Analyze a repository for potential fixes.
 

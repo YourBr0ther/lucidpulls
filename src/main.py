@@ -6,21 +6,24 @@ import os
 import signal
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
 import pytz
+from github import Auth, Github
 
 from src import setup_logging
 from src.utils import sanitize_branch_name
-from src.config import get_settings, Settings
+from src.config import load_settings, Settings
 from src.database import ReviewHistory
-from src.git import RepoManager, PRCreator
+from src.git import RepoManager, PRCreator, GitHubRateLimiter, RateLimitExhausted
 from src.llm import get_llm
 from src.analyzers import CodeAnalyzer, IssueAnalyzer
+from src.models import PRSummary, ReviewReport
 from src.notifications import get_notifier
-from src.scheduler import ReviewScheduler, DeadlineEnforcer
+from src.scheduler import ReviewScheduler, DeadlineEnforcer, _write_heartbeat
 
 logger = logging.getLogger("lucidpulls.main")
 
@@ -34,18 +37,36 @@ class LucidPulls:
         Args:
             settings: Optional settings override.
         """
-        self.settings = settings or get_settings()
+        self.settings = settings or load_settings()
+
+        # Shutdown coordination
+        self._shutdown = False
+        self._lock = threading.Lock()
+        self._idle = threading.Event()
+        self._idle.set()
+        self._shutdown_event = threading.Event()
+
+        # Single shared GitHub client
+        self._github = Github(auth=Auth.Token(self.settings.github_token), timeout=30)
+        self._rate_limiter = GitHubRateLimiter(
+            self._github, shutdown_event=self._shutdown_event
+        )
 
         # Initialize components
         self.history = ReviewHistory()
         self.repo_manager = RepoManager(
-            github_token=self.settings.github_token,
+            github=self._github,
+            rate_limiter=self._rate_limiter,
             username=self.settings.github_username,
             email=self.settings.github_email,
             ssh_key_path=self.settings.ssh_key_path,
             clone_dir=self.settings.clone_dir,
+            max_clone_disk_mb=self.settings.max_clone_disk_mb,
         )
-        self.pr_creator = PRCreator(github_token=self.settings.github_token)
+        self.pr_creator = PRCreator(
+            github=self._github,
+            rate_limiter=self._rate_limiter,
+        )
 
         # Initialize LLM
         llm_config = self.settings.get_llm_config()
@@ -66,13 +87,6 @@ class LucidPulls:
             timezone=self.settings.timezone,
         )
 
-        # Shutdown flag with lock for thread safety
-        self._shutdown = False
-        self._lock = threading.Lock()
-        # Event is set when idle, cleared while _process_repo is running
-        self._idle = threading.Event()
-        self._idle.set()
-
     def run_review(self) -> None:
         """Run the nightly review process."""
         logger.info("Starting nightly review")
@@ -92,43 +106,37 @@ class LucidPulls:
         # Clean up stale repo clones
         self.repo_manager.cleanup_stale_repos(repos)
 
-        logger.info(f"Processing {len(repos)} repositories")
+        logger.info(f"Processing {len(repos)} repositories with {self.settings.max_workers} workers")
 
         prs_created = 0
         repos_reviewed = 0
 
-        for repo_name in repos:
-            with self._lock:
-                if self._shutdown:
-                    logger.info("Shutdown requested, stopping review")
+        with ThreadPoolExecutor(max_workers=self.settings.max_workers) as executor:
+            futures = {}
+            for repo_name in repos:
+                with self._lock:
+                    if self._shutdown:
+                        break
+                if self.deadline.is_past_deadline():
+                    logger.warning("Deadline reached, not submitting more repos")
                     break
+                future = executor.submit(self._process_repo, repo_name, run_id)
+                futures[future] = repo_name
 
-            if self.deadline.is_past_deadline():
-                logger.warning("Deadline reached, stopping review")
-                break
-
-            try:
-                self._idle.clear()
-                result = self._process_repo(repo_name, run_id)
-                repos_reviewed += 1
-                if result:
-                    prs_created += 1
-            except Exception as e:
-                logger.error(f"Error processing {repo_name}: {e}")
+            for future in as_completed(futures):
+                repo_name = futures[future]
                 try:
-                    self.history.record_pr(
-                        run_id,
-                        repo_name=repo_name,
-                        success=False,
-                        error=str(e),
-                    )
-                except Exception as db_err:
-                    logger.error(f"Failed to record error for {repo_name}: {db_err}")
-            finally:
-                self._idle.set()
+                    result = future.result()
+                    repos_reviewed += 1
+                    if result:
+                        prs_created += 1
+                except Exception as e:
+                    repos_reviewed += 1
+                    logger.error(f"Error processing {repo_name}: {e}")
 
         # Complete the run
-        self.history.complete_run(run_id, repos_reviewed, prs_created)
+        if not self.history.complete_run(run_id, repos_reviewed, prs_created):
+            logger.warning(f"Failed to record completion of run #{run_id}")
         logger.info(f"Review complete: {repos_reviewed} repos, {prs_created} PRs")
 
     def _process_repo(self, repo_name: str, run_id: int) -> bool:
@@ -143,24 +151,50 @@ class LucidPulls:
         """
         logger.info(f"Processing {repo_name}")
 
-        # Clone or pull the repository
-        repo_info = self.repo_manager.clone_or_pull(repo_name)
-        if not repo_info:
+        try:
+            self._idle.clear()
+
+            # Clone or pull the repository
+            try:
+                repo_info = self.repo_manager.clone_or_pull(repo_name)
+            except RateLimitExhausted as e:
+                logger.warning(f"Rate limit exhausted while cloning {repo_name}, skipping")
+                self.history.record_pr(
+                    run_id,
+                    repo_name=repo_name,
+                    success=False,
+                    error=f"Rate limit exhausted ({e.wait_seconds:.0f}s wait)",
+                )
+                return False
+
+            if not repo_info:
+                self.history.record_pr(
+                    run_id,
+                    repo_name=repo_name,
+                    success=False,
+                    error="Failed to clone/pull repository",
+                )
+                return False
+
+            try:
+                return self._analyze_and_fix(repo_name, repo_info, run_id)
+            finally:
+                # Always release repo resources after processing
+                self.repo_manager.close_repo(repo_name)
+        except Exception as e:
+            logger.error(f"Error processing {repo_name}: {e}")
             self.history.record_pr(
                 run_id,
                 repo_name=repo_name,
                 success=False,
-                error="Failed to clone/pull repository",
+                error=str(e),
             )
             return False
-
-        try:
-            return self._analyze_and_fix(repo_name, repo_info, run_id)
         finally:
-            # Always release repo resources after processing
-            self.repo_manager.close_repo(repo_name)
+            _write_heartbeat()
+            self._idle.set()
 
-    def _analyze_and_fix(self, repo_name: str, repo_info, run_id: int) -> bool:
+    def _analyze_and_fix(self, repo_name: str, repo_info: object, run_id: int) -> bool:
         """Run analysis and apply fix for a repo. Separated for resource cleanup.
 
         Args:
@@ -172,18 +206,31 @@ class LucidPulls:
             True if a PR was created.
         """
         # Check for existing LucidPulls PR early (before expensive LLM analysis)
-        if self.pr_creator.has_open_lucidpulls_pr(repo_name):
-            logger.info(f"Skipping {repo_name}: existing LucidPulls PR found")
+        try:
+            if self.pr_creator.has_open_lucidpulls_pr(repo_name):
+                logger.info(f"Skipping {repo_name}: existing LucidPulls PR found")
+                self.history.record_pr(
+                    run_id,
+                    repo_name=repo_name,
+                    success=False,
+                    error="Existing LucidPulls PR already open",
+                )
+                return False
+        except RateLimitExhausted:
+            logger.warning(f"Rate limit exhausted checking PRs for {repo_name}, skipping")
             self.history.record_pr(
                 run_id,
                 repo_name=repo_name,
                 success=False,
-                error="Existing LucidPulls PR already open",
+                error="Rate limit exhausted",
             )
             return False
 
         # Get open issues (used to guide analysis, but not required)
-        issues = self.pr_creator.get_open_issues(repo_name)
+        try:
+            issues = self.pr_creator.get_open_issues(repo_name)
+        except RateLimitExhausted:
+            issues = []
         issues = self.issue_analyzer.filter_actionable(issues)
         issues = self.issue_analyzer.prioritize(issues, limit=5)
 
@@ -204,6 +251,7 @@ class LucidPulls:
                 repo_name=repo_name,
                 success=False,
                 error="No actionable fixes identified",
+                analysis_time=result.analysis_time_seconds,
             )
             return False
 
@@ -220,6 +268,7 @@ class LucidPulls:
                 repo_name=repo_name,
                 success=False,
                 error="Failed to create branch",
+                analysis_time=result.analysis_time_seconds,
             )
             return False
 
@@ -231,6 +280,7 @@ class LucidPulls:
                 repo_name=repo_name,
                 success=False,
                 error="Failed to apply fix",
+                analysis_time=result.analysis_time_seconds,
             )
             return False
 
@@ -243,8 +293,23 @@ class LucidPulls:
                 repo_name=repo_name,
                 success=False,
                 error="Failed to commit changes",
+                analysis_time=result.analysis_time_seconds,
             )
             return False
+
+        # Dry-run: log what would happen, clean up, and return
+        if self.settings.dry_run:
+            logger.info(f"[DRY RUN] Would create PR: {fix.pr_title}")
+            self.repo_manager.cleanup_branch(repo_info, branch_name)
+            self.history.record_pr(
+                run_id,
+                repo_name=repo_name,
+                pr_title=fix.pr_title,
+                success=True,
+                error="dry_run",
+                analysis_time=result.analysis_time_seconds,
+            )
+            return True
 
         # Push branch
         if not self.repo_manager.push_branch(repo_info, branch_name):
@@ -254,18 +319,30 @@ class LucidPulls:
                 repo_name=repo_name,
                 success=False,
                 error="Failed to push branch",
+                analysis_time=result.analysis_time_seconds,
             )
             return False
 
         # Create PR
-        pr_result = self.pr_creator.create_pr(
-            repo_full_name=repo_name,
-            branch_name=branch_name,
-            base_branch=repo_info.default_branch,
-            title=fix.pr_title,
-            body=fix.pr_body,
-            related_issue=fix.related_issue,
-        )
+        try:
+            pr_result = self.pr_creator.create_pr(
+                repo_full_name=repo_name,
+                branch_name=branch_name,
+                base_branch=repo_info.default_branch,
+                title=fix.pr_title,
+                body=fix.pr_body,
+                related_issue=fix.related_issue,
+            )
+        except RateLimitExhausted:
+            self.repo_manager.cleanup_branch(repo_info, branch_name, remote=True)
+            self.history.record_pr(
+                run_id,
+                repo_name=repo_name,
+                success=False,
+                error="Rate limit exhausted during PR creation",
+                analysis_time=result.analysis_time_seconds,
+            )
+            return False
 
         if not pr_result.success:
             # Clean up both local and remote branch since push already succeeded
@@ -275,6 +352,7 @@ class LucidPulls:
                 repo_name=repo_name,
                 success=False,
                 error=pr_result.error or "Failed to create PR",
+                analysis_time=result.analysis_time_seconds,
             )
             return False
 
@@ -286,6 +364,7 @@ class LucidPulls:
             pr_url=pr_result.pr_url,
             pr_title=fix.pr_title,
             success=True,
+            analysis_time=result.analysis_time_seconds,
         )
 
         logger.info(f"Created PR #{pr_result.pr_number}: {pr_result.pr_url}")
@@ -293,8 +372,6 @@ class LucidPulls:
 
     def test_notifications(self) -> None:
         """Send a test notification to verify delivery is working."""
-        from src.notifications.base import PRSummary, ReviewReport
-
         logger.info("Sending test notification")
 
         if not self.notifier.is_configured():
@@ -389,7 +466,7 @@ class LucidPulls:
 
         # Validate SSH key if configured
         if self.settings.ssh_key_path:
-            key_path = Path(self.settings.ssh_key_path).expanduser()
+            key_path = Path(self.settings.ssh_key_path)
             if not key_path.exists():
                 logger.error(f"SSH key not found: {key_path}")
                 sys.exit(1)
@@ -397,12 +474,9 @@ class LucidPulls:
                 logger.error(f"SSH key is not readable: {key_path} — check file permissions (should be 600)")
                 sys.exit(1)
 
-        # Validate GitHub token by making a lightweight API call
+        # Validate GitHub token using the shared client
         try:
-            from github import Github
-            gh = Github(self.settings.github_token)
-            gh.get_user().login
-            gh.close()
+            self._github.get_user().login
         except Exception as e:
             logger.error(f"GitHub token validation failed: {e}")
             sys.exit(1)
@@ -433,15 +507,15 @@ class LucidPulls:
         # Start scheduler (blocking)
         self.scheduler.start()
 
-    def _signal_handler(self, signum: int, frame) -> None:
+    def _signal_handler(self, signum: int, frame: object) -> None:
         """Handle shutdown signals gracefully.
 
-        Sets the shutdown flag and waits for any in-flight repo processing
-        to finish before tearing down resources.
+        Sets the shutdown flag and signals all waiting threads to stop.
         """
         logger.info(f"Received signal {signum}, shutting down...")
         with self._lock:
             self._shutdown = True
+        self._shutdown_event.set()
         self.scheduler.stop()
         # Wait for any in-progress repo operation to finish (up to 60s)
         if not self._idle.is_set():
@@ -453,13 +527,17 @@ class LucidPulls:
         """Clean up all resources."""
         logger.debug("Closing LucidPulls resources")
 
-        # Close repo manager (includes GitHub client and git repos)
+        # Close repo manager (git repos, SSH env)
         if hasattr(self, "repo_manager"):
             self.repo_manager.close()
 
-        # Close PR creator (GitHub client)
+        # Close PR creator (no-op, shared client)
         if hasattr(self, "pr_creator"):
             self.pr_creator.close()
+
+        # Close the shared GitHub client
+        if hasattr(self, "_github"):
+            self._github.close()
 
         # Close LLM client (HTTP client)
         if hasattr(self, "llm") and hasattr(self.llm, "close"):
@@ -501,6 +579,16 @@ def main() -> None:
         help="Send a test notification to verify delivery",
     )
     parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Analyze and commit locally but skip push and PR creation",
+    )
+    parser.add_argument(
+        "--health-check",
+        action="store_true",
+        help="Check heartbeat and exit with 0 (healthy) or 1 (unhealthy)",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Enable debug logging",
@@ -508,10 +596,17 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    # Set up logging
-    settings = get_settings()
+    # Health check runs without config — exit early
+    if args.health_check:
+        from src.scheduler import check_heartbeat
+        sys.exit(0 if check_heartbeat() else 1)
+
+    # Load settings once and thread through
+    settings = load_settings()
+    if args.dry_run:
+        settings.dry_run = True
     log_level = "DEBUG" if args.debug else settings.log_level
-    setup_logging(log_level)
+    setup_logging(log_level, log_format=settings.log_format)
 
     logger.info("LucidPulls starting up")
 

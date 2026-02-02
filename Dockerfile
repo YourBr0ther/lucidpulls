@@ -29,6 +29,8 @@ USER root
 # Copy application code
 COPY src/ ./src/
 COPY pyproject.toml .
+COPY alembic.ini .
+COPY migrations/ ./migrations/
 
 # Create data and temp directories for SQLite and repos
 RUN mkdir -p /app/data /tmp/lucidpulls && \
@@ -44,7 +46,7 @@ ENV PYTHONUNBUFFERED=1
 
 # Health check - verify process is alive and heartbeat is recent
 HEALTHCHECK --interval=60s --timeout=10s --retries=3 --start-period=60s \
-    CMD gosu lucidpulls python -c "import os, signal; os.kill(1, 0); from src.scheduler import check_heartbeat; exit(0 if check_heartbeat() else 1)" || exit 1
+    CMD gosu lucidpulls python -m src.main --health-check || exit 1
 
 # Entrypoint fixes bind-mount permissions then drops to non-root user
 ENTRYPOINT ["entrypoint.sh"]

@@ -1,16 +1,18 @@
 """Pull request creation functionality."""
 
 import logging
-import threading
-import time
 from dataclasses import dataclass
 from typing import Optional
 
-from github import Auth, Github, GithubException, RateLimitExceededException
+from github import Github, GithubException, RateLimitExceededException
 
+from src.git.rate_limiter import GitHubRateLimiter
+from src.models import GithubIssue
 from src.utils import retry
 
 logger = logging.getLogger("lucidpulls.git.pr_creator")
+
+LUCIDPULLS_LABEL = "lucidpulls"
 
 
 @dataclass
@@ -26,53 +28,36 @@ class PRResult:
 class PRCreator:
     """Creates pull requests on GitHub."""
 
-    def __init__(self, github_token: str, rate_limit_delay: float = 0.5):
+    def __init__(self, github: Github, rate_limiter: GitHubRateLimiter):
         """Initialize PR creator.
 
         Args:
-            github_token: GitHub Personal Access Token.
-            rate_limit_delay: Minimum delay between API calls in seconds.
+            github: Shared Github client instance.
+            rate_limiter: Shared rate limiter instance.
         """
-        self.github = Github(auth=Auth.Token(github_token), timeout=30)
-        self._last_call = 0.0
-        self._rate_limit_delay = rate_limit_delay
-        self._rate_limit_lock = threading.Lock()
+        self.github = github
+        self._rate_limiter = rate_limiter
 
-    def _rate_limit(self) -> None:
-        """Ensure minimum delay between API calls and check quota (thread-safe)."""
-        with self._rate_limit_lock:
-            elapsed = time.time() - self._last_call
-            if elapsed < self._rate_limit_delay:
-                time.sleep(self._rate_limit_delay - elapsed)
-            self._last_call = time.time()
-
-        # Proactively check remaining quota
-        self._check_rate_limit_quota()
-
-    def _check_rate_limit_quota(self) -> None:
-        """Check GitHub API rate limit and sleep until reset if exhausted."""
+    def _ensure_label_exists(self, repo_full_name: str) -> None:
+        """Ensure the lucidpulls label exists on the repo, creating it if needed."""
         try:
-            rate_limit = self.github.get_rate_limit()
-            core = rate_limit.core
-
-            if core.remaining < 10:
-                reset_time = core.reset.timestamp()
-                wait_seconds = max(reset_time - time.time(), 0) + 5  # 5s buffer
-                if core.remaining == 0:
-                    logger.warning(
-                        f"GitHub rate limit exhausted. Waiting {wait_seconds:.0f}s until reset."
-                    )
-                    time.sleep(wait_seconds)
-                else:
-                    logger.info(
-                        f"GitHub rate limit low ({core.remaining} remaining). "
-                        f"Reset in {wait_seconds:.0f}s."
-                    )
+            repo = self.github.get_repo(repo_full_name)
+            try:
+                repo.get_label(LUCIDPULLS_LABEL)
+            except GithubException:
+                repo.create_label(
+                    name=LUCIDPULLS_LABEL,
+                    color="7B68EE",
+                    description="Automated PR by LucidPulls",
+                )
+                logger.debug(f"Created '{LUCIDPULLS_LABEL}' label on {repo_full_name}")
         except Exception as e:
-            logger.debug(f"Could not check rate limit: {e}")
+            logger.debug(f"Could not ensure label exists: {e}")
 
     def has_open_lucidpulls_pr(self, repo_full_name: str) -> bool:
         """Check if there's already an open PR from LucidPulls.
+
+        Uses label filtering to avoid iterating all open PRs.
 
         Args:
             repo_full_name: Full repository name (owner/repo).
@@ -80,14 +65,29 @@ class PRCreator:
         Returns:
             True if an open LucidPulls PR exists.
         """
-        self._rate_limit()
+        self._rate_limiter.throttle()
         try:
             repo = self.github.get_repo(repo_full_name)
+
+            # Try label-based search first (efficient)
+            try:
+                labeled_issues = repo.get_issues(
+                    state="open", labels=[LUCIDPULLS_LABEL]
+                )
+                for issue in labeled_issues:
+                    if issue.pull_request is not None:
+                        logger.info(f"Found existing LucidPulls PR: #{issue.number}")
+                        return True
+            except GithubException:
+                pass
+
+            # Fallback: check branch prefix for PRs created before labeling
             open_prs = repo.get_pulls(state="open")
             for pr in open_prs:
                 if pr.head.ref.startswith("lucidpulls/"):
                     logger.info(f"Found existing LucidPulls PR: #{pr.number}")
                     return True
+
             return False
         except GithubException as e:
             logger.warning(f"Could not check for existing PRs: {e}")
@@ -118,7 +118,7 @@ class PRCreator:
         Returns:
             PRResult with success status and PR details.
         """
-        self._rate_limit()
+        self._rate_limiter.throttle()
 
         # Add issue reference to body if provided
         if related_issue:
@@ -161,6 +161,13 @@ class PRCreator:
                 base=base_branch,
             )
 
+            # Add lucidpulls label for efficient future lookups
+            try:
+                self._ensure_label_exists(repo_full_name)
+                pr.add_to_labels(LUCIDPULLS_LABEL)
+            except Exception as e:
+                logger.debug(f"Could not add label to PR: {e}")
+
             logger.info(f"Created PR #{pr.number}: {title}")
 
             return PRResult(
@@ -170,7 +177,7 @@ class PRCreator:
             )
         except RateLimitExceededException:
             # Wait for rate limit reset before retrying
-            self._check_rate_limit_quota()
+            self._rate_limiter._check_quota()
             raise
 
     def get_open_issues(
@@ -178,7 +185,7 @@ class PRCreator:
         repo_full_name: str,
         labels: Optional[list[str]] = None,
         limit: int = 20,
-    ) -> list[dict]:
+    ) -> list[GithubIssue]:
         """Get open issues from a repository.
 
         Args:
@@ -187,9 +194,9 @@ class PRCreator:
             limit: Maximum number of issues to return.
 
         Returns:
-            List of issue dictionaries.
+            List of GithubIssue typed dicts.
         """
-        self._rate_limit()
+        self._rate_limiter.throttle()
         try:
             repo = self.github.get_repo(repo_full_name)
 
@@ -204,7 +211,7 @@ class PRCreator:
                 )
                 all_issues = bug_issues + enhancement_issues
                 # Dedupe and limit
-                seen = set()
+                seen: set[int] = set()
                 issues = []
                 for issue in all_issues:
                     if issue.number not in seen:
@@ -222,23 +229,23 @@ class PRCreator:
             logger.error(f"Unexpected error getting issues: {e}")
             return []
 
-    def _issue_to_dict(self, issue) -> dict:
-        """Convert GitHub issue to dictionary.
+    def _issue_to_dict(self, issue: object) -> GithubIssue:
+        """Convert GitHub issue to GithubIssue TypedDict.
 
         Args:
             issue: GitHub issue object.
 
         Returns:
-            Dictionary with issue details.
+            GithubIssue typed dict.
         """
-        return {
-            "number": issue.number,
-            "title": issue.title,
-            "body": issue.body or "",
-            "labels": [l.name for l in issue.labels],
-            "url": issue.html_url,
-            "created_at": issue.created_at.isoformat() if issue.created_at else None,
-        }
+        return GithubIssue(
+            number=issue.number,  # type: ignore[attr-defined]
+            title=issue.title,  # type: ignore[attr-defined]
+            body=issue.body or "",  # type: ignore[attr-defined]
+            labels=[l.name for l in issue.labels],  # type: ignore[attr-defined]
+            url=issue.html_url,  # type: ignore[attr-defined]
+            created_at=issue.created_at.isoformat() if issue.created_at else None,  # type: ignore[attr-defined]
+        )
 
     def add_comment(self, repo: str, pr_number: int, body: str) -> bool:
         """Add a comment to a pull request.
@@ -251,7 +258,7 @@ class PRCreator:
         Returns:
             True if comment was added successfully.
         """
-        self._rate_limit()
+        self._rate_limiter.throttle()
         try:
             gh_repo = self.github.get_repo(repo)
             pr = gh_repo.get_pull(pr_number)
@@ -267,11 +274,10 @@ class PRCreator:
 
     def close(self) -> None:
         """Close GitHub client connection."""
-        if hasattr(self, "github"):
-            self.github.close()
+        pass  # Github client is shared, closed by owner
 
-    def __enter__(self):
+    def __enter__(self) -> "PRCreator":
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self.close()

@@ -10,7 +10,9 @@ from pathlib import Path
 from typing import Optional
 
 from git import Repo, GitCommandError
-from github import Auth, Github, GithubException
+from github import Github, GithubException
+
+from src.git.rate_limiter import GitHubRateLimiter
 
 logger = logging.getLogger("lucidpulls.git.repo_manager")
 
@@ -32,27 +34,33 @@ class RepoManager:
 
     def __init__(
         self,
-        github_token: str,
+        github: Github,
+        rate_limiter: GitHubRateLimiter,
         username: str,
         email: str,
         ssh_key_path: Optional[str] = None,
         clone_dir: str = "/tmp/lucidpulls/repos",
+        max_clone_disk_mb: int = 0,
     ):
         """Initialize repository manager.
 
         Args:
-            github_token: GitHub Personal Access Token.
+            github: Shared Github client instance.
+            rate_limiter: Shared rate limiter instance.
             username: Git username for commits.
             email: Git email for commits.
             ssh_key_path: Path to SSH private key.
             clone_dir: Directory to clone repositories into.
+            max_clone_disk_mb: Maximum disk usage for clones in MB (0 = unlimited).
         """
-        self.github = Github(auth=Auth.Token(github_token), timeout=30)
+        self.github = github
+        self._rate_limiter = rate_limiter
         self.username = username
         self.email = email
         self.ssh_key_path = ssh_key_path
         self.clone_dir = Path(clone_dir)
         self.clone_dir.mkdir(parents=True, exist_ok=True)
+        self._max_clone_disk_bytes = max_clone_disk_mb * 1024 * 1024 if max_clone_disk_mb > 0 else 0
 
         # Track open Repo objects to close them properly
         self._open_repos: dict[str, Repo] = {}
@@ -116,21 +124,37 @@ class RepoManager:
             known_hosts_path.chmod(0o644)
             logger.debug("Added GitHub SSH host keys to known_hosts")
 
-    def _check_rate_limit(self) -> None:
-        """Check GitHub API rate limit and wait if nearly exhausted."""
+    def _get_clone_dir_size(self) -> int:
+        """Get total size of the clone directory in bytes."""
+        total = 0
         try:
-            rate_limit = self.github.get_rate_limit()
-            core = rate_limit.core
-            if core.remaining < 10:
-                reset_time = core.reset.timestamp()
-                wait_seconds = max(reset_time - time.time(), 0) + 5
-                if core.remaining == 0:
-                    logger.warning(f"GitHub rate limit exhausted, waiting {wait_seconds:.0f}s")
-                    time.sleep(wait_seconds)
-                else:
-                    logger.info(f"GitHub rate limit low ({core.remaining} remaining)")
-        except Exception as e:
-            logger.debug(f"Could not check rate limit: {e}")
+            for entry in self.clone_dir.rglob("*"):
+                if entry.is_file():
+                    try:
+                        total += entry.stat().st_size
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+        return total
+
+    def _check_disk_space(self) -> bool:
+        """Check if clone directory is within disk space limits.
+
+        Returns:
+            True if within limits or limits are disabled.
+        """
+        if self._max_clone_disk_bytes == 0:
+            return True
+        current_size = self._get_clone_dir_size()
+        if current_size > self._max_clone_disk_bytes:
+            logger.warning(
+                f"Clone directory exceeds disk limit: "
+                f"{current_size / 1024 / 1024:.0f}MB / "
+                f"{self._max_clone_disk_bytes / 1024 / 1024:.0f}MB"
+            )
+            return False
+        return True
 
     def cleanup_stale_repos(self, active_repos: list[str]) -> None:
         """Remove cloned repos not in the active repo list."""
@@ -162,7 +186,7 @@ class RepoManager:
         Returns:
             RepoInfo if successful, None otherwise.
         """
-        self._check_rate_limit()
+        self._rate_limiter.throttle()
         try:
             # Get repo info from GitHub API
             gh_repo = self.github.get_repo(repo_full_name)
@@ -176,8 +200,14 @@ class RepoManager:
                 if repo is None:
                     # Pull failed and directory was removed, try fresh clone
                     logger.info(f"Pull failed, attempting fresh clone for {repo_full_name}")
+                    if not self._check_disk_space():
+                        logger.error(f"Skipping clone of {repo_full_name}: disk space limit exceeded")
+                        return None
                     repo = self._clone_repo(gh_repo.ssh_url, local_path)
             else:
+                if not self._check_disk_space():
+                    logger.error(f"Skipping clone of {repo_full_name}: disk space limit exceeded")
+                    return None
                 logger.info(f"Cloning {repo_full_name}")
                 repo = self._clone_repo(gh_repo.ssh_url, local_path)
 
@@ -206,7 +236,7 @@ class RepoManager:
             return None
 
     def _clone_repo(self, ssh_url: str, local_path: Path) -> Optional[Repo]:
-        """Clone a repository.
+        """Clone a repository using shallow clone.
 
         Args:
             ssh_url: SSH URL for the repository.
@@ -217,8 +247,8 @@ class RepoManager:
         """
         try:
             local_path.parent.mkdir(parents=True, exist_ok=True)
-            repo = Repo.clone_from(ssh_url, local_path)
-            logger.debug(f"Cloned to {local_path}")
+            repo = Repo.clone_from(ssh_url, local_path, depth=1)
+            logger.debug(f"Shallow cloned to {local_path}")
             return repo
         except GitCommandError as e:
             logger.error(f"Clone failed: {e}")
@@ -387,13 +417,10 @@ class RepoManager:
                 logger.debug(f"Error closing repo {repo_full_name}: {e}")
 
     def close(self) -> None:
-        """Close GitHub client and all open repository connections."""
+        """Close all open repository connections."""
         # Close all tracked Repo objects
         for repo_name in list(self._open_repos.keys()):
             self.close_repo(repo_name)
-
-        if hasattr(self, "github"):
-            self.github.close()
 
         # Clean up SSH environment
         os.environ.pop("GIT_SSH_COMMAND", None)

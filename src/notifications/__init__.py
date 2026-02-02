@@ -1,10 +1,14 @@
 """Notification channel implementations."""
 
 from src.notifications.base import BaseNotifier, NotificationResult
+from src.models import PRSummary, ReviewReport
 from src.notifications.discord import DiscordNotifier
 from src.notifications.teams import TeamsNotifier
 
-__all__ = ["BaseNotifier", "NotificationResult", "DiscordNotifier", "TeamsNotifier"]
+__all__ = [
+    "BaseNotifier", "NotificationResult", "PRSummary", "ReviewReport",
+    "DiscordNotifier", "TeamsNotifier",
+]
 
 
 def get_notifier(channel: str, config: dict) -> BaseNotifier:
