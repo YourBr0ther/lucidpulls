@@ -1,11 +1,13 @@
 """Main entry point and orchestration for LucidPulls."""
 
 import argparse
+import contextvars
 import logging
 import os
 import signal
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -14,7 +16,7 @@ from typing import Optional
 import pytz
 from github import Auth, Github
 
-from src import setup_logging
+from src import setup_logging, current_run_id
 from src.utils import sanitize_branch_name
 from src.config import load_settings, Settings
 from src.database import ReviewHistory
@@ -97,47 +99,60 @@ class LucidPulls:
         # Start tracking this run
         run_id = self.history.start_run()
 
-        repos = self.settings.repo_list
-        if not repos:
-            logger.info("No repositories configured")
-            self.history.complete_run(run_id, 0, 0)
-            return
+        # Set run ID in logging context
+        run_id_token = current_run_id.set(str(run_id))
 
-        # Clean up stale repo clones
-        self.repo_manager.cleanup_stale_repos(repos)
+        try:
+            # Backup database before processing
+            if self.settings.db_backup_enabled:
+                self.history.backup_database(self.settings.db_backup_count)
 
-        logger.info(f"Processing {len(repos)} repositories with {self.settings.max_workers} workers")
+            repos = self.settings.repo_list
+            if not repos:
+                logger.info("No repositories configured")
+                self.history.complete_run(run_id, 0, 0)
+                return
 
-        prs_created = 0
-        repos_reviewed = 0
+            # Clean up stale repo clones
+            self.repo_manager.cleanup_stale_repos(repos)
 
-        with ThreadPoolExecutor(max_workers=self.settings.max_workers) as executor:
-            futures = {}
-            for repo_name in repos:
-                with self._lock:
-                    if self._shutdown:
+            logger.info(f"Processing {len(repos)} repositories with {self.settings.max_workers} workers")
+
+            prs_created = 0
+            repos_reviewed = 0
+
+            # Capture context for thread propagation
+            ctx = contextvars.copy_context()
+
+            with ThreadPoolExecutor(max_workers=self.settings.max_workers) as executor:
+                futures = {}
+                for repo_name in repos:
+                    with self._lock:
+                        if self._shutdown:
+                            break
+                    if self.deadline.is_past_deadline():
+                        logger.warning("Deadline reached, not submitting more repos")
                         break
-                if self.deadline.is_past_deadline():
-                    logger.warning("Deadline reached, not submitting more repos")
-                    break
-                future = executor.submit(self._process_repo, repo_name, run_id)
-                futures[future] = repo_name
+                    future = executor.submit(ctx.run, self._process_repo, repo_name, run_id)
+                    futures[future] = repo_name
 
-            for future in as_completed(futures):
-                repo_name = futures[future]
-                try:
-                    result = future.result()
-                    repos_reviewed += 1
-                    if result:
-                        prs_created += 1
-                except Exception as e:
-                    repos_reviewed += 1
-                    logger.error(f"Error processing {repo_name}: {e}")
+                for future in as_completed(futures):
+                    repo_name = futures[future]
+                    try:
+                        result = future.result()
+                        repos_reviewed += 1
+                        if result:
+                            prs_created += 1
+                    except Exception as e:
+                        repos_reviewed += 1
+                        logger.error(f"Error processing {repo_name}: {e}")
 
-        # Complete the run
-        if not self.history.complete_run(run_id, repos_reviewed, prs_created):
-            logger.warning(f"Failed to record completion of run #{run_id}")
-        logger.info(f"Review complete: {repos_reviewed} repos, {prs_created} PRs")
+            # Complete the run
+            if not self.history.complete_run(run_id, repos_reviewed, prs_created):
+                logger.warning(f"Failed to record completion of run #{run_id}")
+            logger.info(f"Review complete: {repos_reviewed} repos, {prs_created} PRs")
+        finally:
+            current_run_id.reset(run_id_token)
 
     def _process_repo(self, repo_name: str, run_id: int) -> bool:
         """Process a single repository.
@@ -444,11 +459,23 @@ class LucidPulls:
             logger.error("Failed to build report")
             return
 
-        result = self.notifier.send_report(report)
-        if result.success:
-            logger.info(f"Report sent via {self.notifier.channel_name}")
-        else:
-            logger.error(f"Failed to send report: {result.error}")
+        max_attempts = 3
+        retry_delay = 60
+        for attempt in range(1, max_attempts + 1):
+            result = self.notifier.send_report(report)
+            if result.success:
+                logger.info(f"Report sent via {self.notifier.channel_name}")
+                return
+            if attempt < max_attempts:
+                logger.warning(
+                    f"Notification failed (attempt {attempt}/{max_attempts}): "
+                    f"{result.error} — retrying in {retry_delay}s"
+                )
+                time.sleep(retry_delay)
+            else:
+                logger.error(
+                    f"Failed to send report after {max_attempts} attempts: {result.error}"
+                )
 
     def start(self) -> None:
         """Start the LucidPulls service."""

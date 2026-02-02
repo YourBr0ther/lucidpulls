@@ -230,11 +230,11 @@ class TestAlembicMigrations:
             tables = inspector.get_table_names()
             assert "alembic_version" in tables
 
-            # Verify stamp is at 0001
+            # Verify stamp is at head (0002 after index migration)
             with history.engine.connect() as conn:
                 result = conn.execute(text("SELECT version_num FROM alembic_version"))
                 version = result.scalar()
-                assert version == "0001"
+                assert version == "0002"
             history.close()
 
     def test_migration_idempotent(self):

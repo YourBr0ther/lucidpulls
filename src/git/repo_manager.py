@@ -13,6 +13,7 @@ from git import Repo, GitCommandError
 from github import Github, GithubException
 
 from src.git.rate_limiter import GitHubRateLimiter
+from src.utils import retry
 
 logger = logging.getLogger("lucidpulls.git.repo_manager")
 
@@ -235,6 +236,15 @@ class RepoManager:
             logger.error(f"Failed to clone/pull {repo_full_name}: {e}")
             return None
 
+    @staticmethod
+    @retry(max_attempts=3, delay=3.0, backoff=2.0, exceptions=(GitCommandError,))
+    def _clone_with_retry(ssh_url: str, local_path: Path) -> Repo:
+        """Clone with retry, cleaning up partial clones before each attempt."""
+        if local_path.exists():
+            shutil.rmtree(local_path, ignore_errors=True)
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        return Repo.clone_from(ssh_url, local_path, depth=1)
+
     def _clone_repo(self, ssh_url: str, local_path: Path) -> Optional[Repo]:
         """Clone a repository using shallow clone.
 
@@ -246,12 +256,11 @@ class RepoManager:
             Git Repo object if successful.
         """
         try:
-            local_path.parent.mkdir(parents=True, exist_ok=True)
-            repo = Repo.clone_from(ssh_url, local_path, depth=1)
+            repo = self._clone_with_retry(ssh_url, local_path)
             logger.debug(f"Shallow cloned to {local_path}")
             return repo
         except GitCommandError as e:
-            logger.error(f"Clone failed: {e}")
+            logger.error(f"Clone failed after retries: {e}")
             return None
 
     def _pull_repo(self, local_path: Path, default_branch: str) -> Optional[Repo]:
@@ -360,6 +369,12 @@ class RepoManager:
             logger.error(f"Failed to commit: {e}")
             return False
 
+    @staticmethod
+    @retry(max_attempts=3, delay=2.0, backoff=2.0, exceptions=(GitCommandError,))
+    def _push_with_retry(origin, branch_name: str) -> None:
+        """Push with retry on transient network errors."""
+        origin.push(branch_name, set_upstream=True)
+
     def push_branch(self, repo_info: RepoInfo, branch_name: str) -> bool:
         """Push a branch to the remote.
 
@@ -373,11 +388,11 @@ class RepoManager:
         try:
             repo = repo_info.repo
             origin = repo.remotes.origin
-            origin.push(branch_name, set_upstream=True)
+            self._push_with_retry(origin, branch_name)
             logger.info(f"Pushed branch: {branch_name}")
             return True
         except GitCommandError as e:
-            logger.error(f"Failed to push branch {branch_name}: {e}")
+            logger.error(f"Failed to push branch {branch_name} after retries: {e}")
             return False
 
     def cleanup_branch(self, repo_info: RepoInfo, branch_name: str, remote: bool = False) -> None:

@@ -145,6 +145,17 @@ class Settings(BaseSettings):
         description="Log what would happen without pushing branches or creating PRs",
     )
 
+    # Database backups
+    db_backup_enabled: bool = Field(
+        default=True,
+        description="Enable automatic database backups before each review run",
+    )
+    db_backup_count: int = Field(
+        default=7,
+        description="Number of recent database backups to keep",
+        ge=1,
+    )
+
     # Logging
     log_level: str = Field(
         default="INFO",

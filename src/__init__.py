@@ -1,10 +1,24 @@
 """LucidPulls - Code review for bugs while you sleep."""
 
+import contextvars
 import json
 import logging
 import sys
 from datetime import datetime, timezone
 from typing import Optional
+
+# Context variable for correlating logs within a review run
+current_run_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "current_run_id", default="-"
+)
+
+
+class RunIDFilter(logging.Filter):
+    """Injects run_id from contextvars into log records."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.run_id = current_run_id.get("-")
+        return True
 
 
 class JSONFormatter(logging.Formatter):
@@ -15,6 +29,7 @@ class JSONFormatter(logging.Formatter):
             "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
             "level": record.levelname,
             "logger": record.name,
+            "run_id": getattr(record, "run_id", "-"),
             "message": record.getMessage(),
         }
         if record.exc_info and record.exc_info[1]:
@@ -39,12 +54,13 @@ def setup_logging(level: Optional[str] = None, log_format: str = "text") -> logg
         formatter = JSONFormatter()
     else:
         formatter = logging.Formatter(
-            fmt="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+            fmt="%(asctime)s | %(levelname)-8s | %(name)s | run=%(run_id)s | %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )
 
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(formatter)
+    handler.addFilter(RunIDFilter())
 
     logger = logging.getLogger("lucidpulls")
     logger.setLevel(log_level)
@@ -58,4 +74,4 @@ def setup_logging(level: Optional[str] = None, log_format: str = "text") -> logg
 
 
 __version__ = "0.1.0"
-__all__ = ["setup_logging", "__version__"]
+__all__ = ["setup_logging", "current_run_id", "RunIDFilter", "__version__"]

@@ -1,11 +1,13 @@
 """Review history tracking and database operations."""
 
 import logging
+import shutil
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, Session, joinedload
 
 from src.database.models import Base, ReviewRun, PRRecord
@@ -23,11 +25,21 @@ class ReviewHistory:
         Args:
             db_path: Path to SQLite database file.
         """
+        self.db_path = db_path
+
         # Ensure directory exists
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
         self.db_url = f"sqlite:///{db_path}"
         self.engine = create_engine(self.db_url, echo=False)
+
+        # Enable WAL mode for better crash recovery and concurrent reads
+        @event.listens_for(self.engine, "connect")
+        def _set_wal_mode(dbapi_connection, connection_record):
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.close()
+
         # expire_on_commit=False prevents detached instance errors when accessing
         # ORM objects after the session closes
         self.SessionLocal = sessionmaker(bind=self.engine, expire_on_commit=False)
@@ -61,6 +73,44 @@ class ReviewHistory:
             command.stamp(alembic_cfg, "0001")
 
         command.upgrade(alembic_cfg, "head")
+
+    def backup_database(self, backup_count: int = 7) -> Optional[str]:
+        """Create a backup of the database using SQLite's backup API.
+
+        Args:
+            backup_count: Number of recent backups to keep.
+
+        Returns:
+            Path to the backup file, or None on failure.
+        """
+        try:
+            backup_dir = Path(self.db_path).parent / "backups"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_path = backup_dir / f"lucidpulls_{timestamp}.db"
+
+            # Use sqlite3 backup API for a consistent snapshot
+            source = sqlite3.connect(self.db_path)
+            dest = sqlite3.connect(str(backup_path))
+            try:
+                source.backup(dest)
+            finally:
+                dest.close()
+                source.close()
+
+            logger.info(f"Database backup created: {backup_path}")
+
+            # Rotate: keep only the N most recent backups
+            backups = sorted(backup_dir.glob("lucidpulls_*.db"))
+            for old_backup in backups[:-backup_count]:
+                old_backup.unlink()
+                logger.debug(f"Deleted old backup: {old_backup}")
+
+            return str(backup_path)
+        except Exception as e:
+            logger.error(f"Database backup failed: {e}")
+            return None
 
     def start_run(self) -> int:
         """Start a new review run.

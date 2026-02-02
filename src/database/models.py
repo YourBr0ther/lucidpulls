@@ -18,11 +18,11 @@ class ReviewRun(Base):
     __tablename__ = "review_runs"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    started_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+    started_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), index=True)
     completed_at = Column(DateTime, nullable=True)
     repos_reviewed = Column(Integer, default=0)
     prs_created = Column(Integer, default=0)
-    status = Column(String(50), default="running")  # running, completed, failed
+    status = Column(String(50), default="running", index=True)  # running, completed, failed
     error = Column(Text, nullable=True)
 
     # Relationship to PR records
@@ -38,8 +38,8 @@ class PRRecord(Base):
     __tablename__ = "pr_records"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    review_run_id = Column(Integer, ForeignKey("review_runs.id"), nullable=False)
-    repo_name = Column(String(255), nullable=False)
+    review_run_id = Column(Integer, ForeignKey("review_runs.id"), nullable=False, index=True)
+    repo_name = Column(String(255), nullable=False, index=True)
     pr_number = Column(Integer, nullable=True)
     pr_url = Column(String(500), nullable=True)
     pr_title = Column(String(500), nullable=True)
@@ -47,7 +47,7 @@ class PRRecord(Base):
     error = Column(Text, nullable=True)
     analysis_time = Column(Float, nullable=True)
     llm_tokens_used = Column(Integer, nullable=True)
-    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), index=True)
 
     # Relationship back to review run
     review_run = relationship("ReviewRun", back_populates="prs")
