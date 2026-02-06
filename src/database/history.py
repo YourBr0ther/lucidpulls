@@ -304,7 +304,7 @@ class ReviewHistory:
             ]
 
             # Sum LLM tokens across all PR records for this run
-            token_values = [pr.llm_tokens_used for pr in prs if pr.llm_tokens_used]
+            token_values = [pr.llm_tokens_used for pr in prs if pr.llm_tokens_used is not None]
             total_tokens = sum(token_values) if token_values else None
 
             return ReviewReport(

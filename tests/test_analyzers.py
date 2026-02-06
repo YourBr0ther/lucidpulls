@@ -636,3 +636,71 @@ class TestDetectTestCommand:
             (Path(tmpdir) / "pyproject.toml").write_text("[tool.pytest]")
             cmd = analyzer._detect_test_command(Path(tmpdir))
             assert cmd is None
+
+
+class TestRunRepoTests:
+    """Tests for run_repo_tests method."""
+
+    def test_skipped_when_no_test_runner(self):
+        """Should return skipped when no test runner is detected."""
+        analyzer = CodeAnalyzer(Mock())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = analyzer.run_repo_tests(Path(tmpdir))
+            assert result.status == "skipped"
+            assert not result.ran
+            assert not result.passed
+
+    @patch("src.analyzers.code_analyzer.subprocess.run")
+    def test_passed_when_tests_succeed(self, mock_run):
+        """Should return passed when test command exits 0."""
+        mock_run.return_value = Mock(returncode=0)
+        analyzer = CodeAnalyzer(Mock())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            (Path(tmpdir) / "pyproject.toml").write_text("[tool.pytest]")
+            (Path(tmpdir) / "tests").mkdir()
+            result = analyzer.run_repo_tests(Path(tmpdir))
+            assert result.status == "passed"
+            assert result.ran
+            assert result.passed
+
+    @patch("src.analyzers.code_analyzer.subprocess.run")
+    def test_failed_when_tests_fail(self, mock_run):
+        """Should return failed with output tail when tests exit non-zero."""
+        mock_run.return_value = Mock(
+            returncode=1, stdout="FAILED test_foo.py\n", stderr="1 failed\n"
+        )
+        analyzer = CodeAnalyzer(Mock())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            (Path(tmpdir) / "pyproject.toml").write_text("[tool.pytest]")
+            (Path(tmpdir) / "tests").mkdir()
+            result = analyzer.run_repo_tests(Path(tmpdir))
+            assert result.status == "failed"
+            assert result.ran
+            assert not result.passed
+            assert "1 failed" in result.detail
+
+    @patch("src.analyzers.code_analyzer.subprocess.run")
+    def test_timeout_returns_timeout_status(self, mock_run):
+        """Should return timeout status when tests exceed time limit."""
+        import subprocess
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="pytest", timeout=10)
+        analyzer = CodeAnalyzer(Mock())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            (Path(tmpdir) / "pyproject.toml").write_text("[tool.pytest]")
+            (Path(tmpdir) / "tests").mkdir()
+            result = analyzer.run_repo_tests(Path(tmpdir), timeout=10)
+            assert result.status == "timeout"
+            assert result.ran
+            assert not result.passed
+
+    @patch("src.analyzers.code_analyzer.subprocess.run")
+    def test_missing_runner_returns_skipped(self, mock_run):
+        """Should return skipped when test runner binary is not found."""
+        mock_run.side_effect = FileNotFoundError("python3 not found")
+        analyzer = CodeAnalyzer(Mock())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            (Path(tmpdir) / "pyproject.toml").write_text("[tool.pytest]")
+            (Path(tmpdir) / "tests").mkdir()
+            result = analyzer.run_repo_tests(Path(tmpdir))
+            assert result.status == "skipped"
+            assert not result.ran

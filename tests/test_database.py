@@ -355,6 +355,25 @@ class TestTokenAggregation:
             assert report.llm_tokens_used is None
             history.close()
 
+    def test_build_report_includes_zero_tokens(self):
+        """A PR with explicit 0 tokens should be included in the sum, not treated as None."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            history = ReviewHistory(db_path=f"{tmpdir}/test.db")
+            run_id = history.start_run()
+            history.record_pr(
+                run_id, "owner/repo1", success=True, pr_number=1,
+                pr_title="Fix 1", llm_tokens_used=0,
+            )
+            history.record_pr(
+                run_id, "owner/repo2", success=True, pr_number=2,
+                pr_title="Fix 2", llm_tokens_used=300,
+            )
+            history.complete_run(run_id, repos_reviewed=2, prs_created=2)
+
+            report = history.build_report(run_id)
+            assert report.llm_tokens_used == 300
+            history.close()
+
 
 class TestErrorPaths:
     """Tests for database error handling paths."""

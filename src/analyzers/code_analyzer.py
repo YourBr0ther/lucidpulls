@@ -144,7 +144,7 @@ class CodeAnalyzer(BaseAnalyzer):
                     prompt, system_prompt=CODE_REVIEW_SYSTEM_PROMPT
                 )
                 response_content = llm_response.content
-                tokens_used = llm_response.tokens_used or 0
+                tokens_used = llm_response.tokens_used
             except (ValueError, httpx.TimeoutException) as e:
                 error_msg = "LLM request timed out" if isinstance(e, httpx.TimeoutException) else "LLM returned empty response after retries"
                 logger.error(f"LLM call failed after retries: {e}")
@@ -432,7 +432,7 @@ class CodeAnalyzer(BaseAnalyzer):
                     tmp_f.write(new_content)
 
                 # Validate syntax on the temp file
-                if not self._validate_syntax(Path(tmp_path)):
+                if not self._validate_syntax(Path(tmp_path), repo_path=repo_path):
                     logger.error(f"Syntax validation failed, discarding fix for {fix.file_path}")
                     return False
 
@@ -442,18 +442,21 @@ class CodeAnalyzer(BaseAnalyzer):
                 return True
             finally:
                 # Clean up temp file if it still exists (validation failed)
-                if os.path.exists(tmp_path):
+                try:
                     os.unlink(tmp_path)
+                except FileNotFoundError:
+                    pass
 
         except Exception as e:
             logger.error(f"Failed to apply fix: {e}")
             return False
 
-    def _validate_syntax(self, file_path: Path) -> bool:
+    def _validate_syntax(self, file_path: Path, repo_path: Optional[Path] = None) -> bool:
         """Validate file syntax after fix.
 
         Args:
             file_path: Path to the file.
+            repo_path: Repository root path (used to bound Cargo.toml search).
 
         Returns:
             True if syntax is valid.
@@ -471,7 +474,7 @@ class CodeAnalyzer(BaseAnalyzer):
         elif suffix == ".java":
             return self._validate_java_syntax(file_path)
         elif suffix == ".rs":
-            return self._validate_rust_syntax(file_path)
+            return self._validate_rust_syntax(file_path, repo_path=repo_path)
 
         # For other languages, assume valid
         return True
@@ -628,34 +631,43 @@ class CodeAnalyzer(BaseAnalyzer):
             logger.debug(f"Java syntax validation error (skipping): {e}")
             return True
 
-    def _validate_rust_syntax(self, file_path: Path) -> bool:
+    def _validate_rust_syntax(self, file_path: Path, repo_path: Optional[Path] = None) -> bool:
         """Validate Rust syntax using rustc (parse-only via --edition flag).
 
         Args:
             file_path: Path to the Rust file.
+            repo_path: Repository root path to bound Cargo.toml search.
 
         Returns:
             True if syntax is valid, or if rustc is not installed (fail-open).
         """
         try:
             # Use cargo check if Cargo.toml exists (better for real projects)
-            cargo_toml = file_path.parent
-            while cargo_toml != cargo_toml.parent:
-                if (cargo_toml / "Cargo.toml").exists():
-                    break
-                cargo_toml = cargo_toml.parent
+            found_cargo = False
+            if repo_path is not None:
+                repo_root = repo_path.resolve()
+                search_dir = file_path.parent
+                while True:
+                    if (search_dir / "Cargo.toml").exists():
+                        found_cargo = True
+                        cargo_dir = search_dir
+                        break
+                    # Stop at repo boundary — never walk outside the repo
+                    if search_dir.resolve() == repo_root or search_dir == search_dir.parent:
+                        break
+                    search_dir = search_dir.parent
 
-            if (cargo_toml / "Cargo.toml").exists():
+            if found_cargo:
                 result = subprocess.run(
                     ["cargo", "check", "--message-format=short"],
-                    cwd=str(cargo_toml),
+                    cwd=str(cargo_dir),
                     capture_output=True,
                     timeout=30,
                 )
             else:
                 result = subprocess.run(
                     ["rustc", "--edition", "2021", "--crate-type", "lib",
-                     "-o", "/dev/null", str(file_path)],
+                     "-o", os.devnull, str(file_path)],
                     capture_output=True,
                     timeout=15,
                 )

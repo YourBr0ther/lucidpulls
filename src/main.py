@@ -134,6 +134,12 @@ class LucidPulls:
                     futures[future] = repo_name
 
                 for future in as_completed(futures):
+                    if self._shutdown_requested.is_set():
+                        logger.info("Shutdown requested, cancelling remaining tasks")
+                        for f in futures:
+                            if not f.done():
+                                f.cancel()
+                        break
                     repo_name = futures[future]
                     try:
                         result = future.result()
