@@ -394,6 +394,7 @@ class LucidPulls:
             pr_title=fix.pr_title,
             success=True,
             analysis_time=result.analysis_time_seconds,
+            llm_tokens_used=result.llm_tokens_used,
         )
 
         logger.info(f"Created PR #{pr_result.pr_number}: {pr_result.pr_url}")
@@ -612,24 +613,26 @@ class LucidPulls:
         if next_review:
             logger.info(f"Next review scheduled at: {next_review}")
 
-        # Start scheduler (blocking)
+        # Start scheduler (blocking — returns when scheduler is stopped)
         self.scheduler.start()
+
+        # Cleanup after scheduler exits (e.g. from signal handler)
+        if not self._idle.is_set():
+            logger.info("Waiting for in-progress repo operation to finish...")
+            self._idle.wait(timeout=60)
+        self.close()
 
     def _signal_handler(self, signum: int, frame: object) -> None:
         """Handle shutdown signals gracefully.
 
-        Sets the shutdown flag and signals all waiting threads to stop.
+        Keeps work minimal to avoid deadlocks — sets flags and stops the
+        scheduler, then lets the main thread in start() handle cleanup.
         """
         logger.info(f"Received signal {signum}, shutting down...")
         with self._lock:
             self._shutdown = True
         self._shutdown_event.set()
         self.scheduler.stop()
-        # Wait for any in-progress repo operation to finish (up to 60s)
-        if not self._idle.is_set():
-            logger.info("Waiting for in-progress repo operation to finish...")
-            self._idle.wait(timeout=60)
-        self.close()
 
     def close(self) -> None:
         """Clean up all resources."""

@@ -71,25 +71,48 @@ class TestDeadlineEnforcer:
 
     @patch("src.scheduler.datetime")
     def test_is_past_deadline_before(self, mock_datetime):
-        """Test deadline check before deadline."""
-        # Mock current time to 5:30 AM
+        """Test deadline check returns False before deadline."""
         tz = pytz.timezone("America/New_York")
-        mock_now = tz.localize(datetime(2024, 1, 15, 5, 30))
-        mock_datetime.now.return_value = mock_now
+        mock_datetime.now.return_value = tz.localize(datetime(2024, 1, 15, 5, 30))
 
         enforcer = DeadlineEnforcer("06:00", timezone="America/New_York")
+        enforcer._review_started_at = tz.localize(datetime(2024, 1, 15, 5, 0))
 
-        # Can't easily test due to timezone complexities,
-        # but structure is correct
+        assert enforcer.is_past_deadline() is False
 
-    def test_time_remaining_structure(self):
-        """Test time_remaining method exists and returns appropriate type."""
+    @patch("src.scheduler.datetime")
+    def test_is_past_deadline_after(self, mock_datetime):
+        """Test deadline check returns True after deadline."""
+        tz = pytz.timezone("America/New_York")
+        mock_datetime.now.return_value = tz.localize(datetime(2024, 1, 15, 6, 30))
+
         enforcer = DeadlineEnforcer("06:00", timezone="America/New_York")
+        enforcer._review_started_at = tz.localize(datetime(2024, 1, 15, 5, 0))
+
+        assert enforcer.is_past_deadline() is True
+
+    @patch("src.scheduler.datetime")
+    def test_time_remaining_before_deadline(self, mock_datetime):
+        """Test time_remaining returns correct seconds before deadline."""
+        tz = pytz.timezone("America/New_York")
+        mock_datetime.now.return_value = tz.localize(datetime(2024, 1, 15, 5, 30))
+
+        enforcer = DeadlineEnforcer("06:00", timezone="America/New_York")
+        enforcer._review_started_at = tz.localize(datetime(2024, 1, 15, 5, 0))
 
         result = enforcer.time_remaining()
+        assert result == 1800  # 30 minutes = 1800 seconds
 
-        # Result is either int (seconds remaining) or None (past deadline)
-        assert result is None or isinstance(result, int)
+    @patch("src.scheduler.datetime")
+    def test_time_remaining_past_deadline(self, mock_datetime):
+        """Test time_remaining returns None after deadline."""
+        tz = pytz.timezone("America/New_York")
+        mock_datetime.now.return_value = tz.localize(datetime(2024, 1, 15, 6, 30))
+
+        enforcer = DeadlineEnforcer("06:00", timezone="America/New_York")
+        enforcer._review_started_at = tz.localize(datetime(2024, 1, 15, 5, 0))
+
+        assert enforcer.time_remaining() is None
 
     def test_parse_time(self):
         """Test internal time parsing."""

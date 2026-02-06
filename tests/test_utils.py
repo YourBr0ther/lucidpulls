@@ -93,8 +93,7 @@ class TestSanitizeBranchName:
 
     def test_removes_special_characters(self):
         """Test special characters are removed."""
-        assert sanitize_branch_name("file@name#test") == "filename-test" or \
-               sanitize_branch_name("file@name#test") == "filenametest"
+        assert sanitize_branch_name("file@name#test") == "filenametest"
 
     def test_removes_spaces(self):
         """Test spaces are converted to dashes."""

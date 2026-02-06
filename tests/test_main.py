@@ -153,6 +153,67 @@ class TestLucidPullsRunReview:
         # Should not have tried to process any repos
         agent.repo_manager.clone_or_pull.assert_not_called()
 
+    @patch("src.main.get_notifier")
+    @patch("src.main.get_llm")
+    @patch("src.main.ReviewHistory")
+    @patch("src.main.Github")
+    @patch("src.main.Auth")
+    def test_run_review_sends_failure_alert_when_all_repos_fail(
+        self, mock_auth, mock_github, mock_history, mock_get_llm, mock_get_notifier
+    ):
+        """Test that failure alert is sent when all repos fail (0 PRs created)."""
+        settings = _make_settings(repo_list=["owner/repo1"])
+        mock_history.return_value.start_run.return_value = 1
+
+        agent = LucidPulls(settings)
+        # Simulate clone failure so _process_repo returns False
+        agent.repo_manager.clone_or_pull = Mock(return_value=None)
+        agent._send_failure_alert = Mock()
+
+        agent.run_review()
+
+        agent._send_failure_alert.assert_called_once_with(1)
+
+    @patch("src.main.get_notifier")
+    @patch("src.main.get_llm")
+    @patch("src.main.ReviewHistory")
+    @patch("src.main.Github")
+    @patch("src.main.Auth")
+    def test_run_review_no_failure_alert_when_pr_created(
+        self, mock_auth, mock_github, mock_history, mock_get_llm, mock_get_notifier
+    ):
+        """Test that failure alert is NOT sent when at least one PR is created."""
+        settings = _make_settings(repo_list=["owner/repo1"])
+        mock_history.return_value.start_run.return_value = 1
+
+        agent = LucidPulls(settings)
+        # Mock _process_repo to return True (PR created)
+        agent._process_repo = Mock(return_value=True)
+        agent._send_failure_alert = Mock()
+
+        agent.run_review()
+
+        agent._send_failure_alert.assert_not_called()
+
+    @patch("src.main.get_notifier")
+    @patch("src.main.get_llm")
+    @patch("src.main.ReviewHistory")
+    @patch("src.main.Github")
+    @patch("src.main.Auth")
+    def test_run_review_no_failure_alert_when_no_repos(
+        self, mock_auth, mock_github, mock_history, mock_get_llm, mock_get_notifier
+    ):
+        """Test that failure alert is NOT sent when no repos were reviewed."""
+        settings = _make_settings(repo_list=[])
+        mock_history.return_value.start_run.return_value = 1
+
+        agent = LucidPulls(settings)
+        agent._send_failure_alert = Mock()
+
+        agent.run_review()
+
+        agent._send_failure_alert.assert_not_called()
+
 
 class TestLucidPullsSendReport:
     """Tests for send_report method."""
@@ -200,7 +261,8 @@ class TestLucidPullsSendReport:
         agent.send_report()
 
         # build_report should be called (run is within yesterday-today window)
-        # This test validates the timezone edge case fix
+        mock_history.return_value.build_report.assert_called_once_with(1)
+        mock_get_notifier.return_value.send_report.assert_called_once()
 
 
 class TestLucidPullsStart:
