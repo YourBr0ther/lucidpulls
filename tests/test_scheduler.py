@@ -46,6 +46,24 @@ class TestReviewScheduler:
         assert job is not None
         assert job.name == "Morning Report Delivery"
 
+    def test_review_job_has_misfire_handling(self):
+        """Test that review job is configured with misfire grace and coalesce."""
+        scheduler = ReviewScheduler()
+        scheduler.schedule_review("02:00", Mock())
+
+        job = scheduler.scheduler.get_job("nightly_review")
+        assert job.misfire_grace_time == 3600
+        assert job.coalesce is True
+
+    def test_report_job_has_misfire_handling(self):
+        """Test that report job is configured with misfire grace and coalesce."""
+        scheduler = ReviewScheduler()
+        scheduler.schedule_report("07:00", Mock())
+
+        job = scheduler.scheduler.get_job("morning_report")
+        assert job.misfire_grace_time == 3600
+        assert job.coalesce is True
+
     def test_get_next_run_time(self):
         """Test getting next run time."""
         scheduler = ReviewScheduler()

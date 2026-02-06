@@ -641,6 +641,59 @@ class TestPRCreatorCreatePREdgeCases:
         assert result.pr_number == 1
 
 
+class TestPRCreatorRateLimitRetry:
+    """Tests for rate limit handling in PR creation."""
+
+    @patch("time.sleep")
+    def test_create_pr_retries_on_rate_limit(self, mock_sleep):
+        """Test that rate-limited PR creation retries via the decorator."""
+        mock_repo = Mock()
+        # First call raises GithubException (rate limit), second succeeds
+        mock_pr = Mock(number=1, html_url="https://github.com/o/r/pull/1")
+        mock_repo.create_pull.side_effect = [
+            GithubException(403, {"message": "API rate limit exceeded"}, None),
+            mock_pr,
+        ]
+        mock_repo.get_label.return_value = Mock()
+        mock_github = Mock()
+        mock_github.get_repo.return_value = mock_repo
+
+        creator = _make_pr_creator(github=mock_github)
+        result = creator.create_pr(
+            repo_full_name="owner/repo",
+            branch_name="feature",
+            base_branch="main",
+            title="Fix bug",
+            body="Description",
+        )
+
+        assert result.success is True
+        assert mock_repo.create_pull.call_count == 2
+
+    @patch("time.sleep")
+    def test_create_pr_fails_after_retries_exhausted(self, mock_sleep):
+        """Test that PR creation fails gracefully after all retries."""
+        mock_repo = Mock()
+        mock_repo.create_pull.side_effect = GithubException(
+            403, {"message": "API rate limit exceeded"}, None
+        )
+        mock_github = Mock()
+        mock_github.get_repo.return_value = mock_repo
+
+        creator = _make_pr_creator(github=mock_github)
+        result = creator.create_pr(
+            repo_full_name="owner/repo",
+            branch_name="feature",
+            base_branch="main",
+            title="Fix bug",
+            body="Description",
+        )
+
+        assert result.success is False
+        # 3 attempts (initial + 2 retries)
+        assert mock_repo.create_pull.call_count == 3
+
+
 class TestPRCreatorGetOpenIssuesEdgeCases:
     """Tests for PRCreator.get_open_issues edge cases."""
 

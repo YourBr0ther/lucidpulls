@@ -1,5 +1,6 @@
 """Base LLM interface."""
 
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional
@@ -63,7 +64,11 @@ class BaseLLM(ABC):
 
 
 class BaseHTTPLLM(BaseLLM):
-    """Base class for HTTP-based LLM providers with shared functionality."""
+    """Base class for HTTP-based LLM providers with shared functionality.
+
+    Uses thread-local httpx.Client instances so concurrent workers
+    in the ThreadPoolExecutor each get their own connection pool.
+    """
 
     def __init__(self, timeout: float = DEFAULT_TIMEOUT):
         """Initialize HTTP LLM base.
@@ -71,12 +76,21 @@ class BaseHTTPLLM(BaseLLM):
         Args:
             timeout: Request timeout in seconds.
         """
-        self._client = httpx.Client(timeout=timeout)
+        self._timeout = timeout
+        self._local = threading.local()
+
+    @property
+    def _client(self) -> httpx.Client:
+        """Return a thread-local httpx.Client, creating one if needed."""
+        if not hasattr(self._local, "client"):
+            self._local.client = httpx.Client(timeout=self._timeout)
+        return self._local.client
 
     def close(self) -> None:
-        """Close the HTTP client."""
-        if hasattr(self, "_client") and self._client is not None:
-            self._client.close()
+        """Close the HTTP client for the current thread."""
+        if hasattr(self, "_local") and hasattr(self._local, "client"):
+            self._local.client.close()
+            del self._local.client
 
     def __enter__(self) -> "BaseHTTPLLM":
         return self

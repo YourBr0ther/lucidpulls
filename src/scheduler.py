@@ -86,6 +86,8 @@ class ReviewScheduler:
             id=self._review_job_id,
             replace_existing=True,
             name="Nightly Code Review",
+            misfire_grace_time=3600,
+            coalesce=True,
         )
 
         logger.info(f"Scheduled nightly review at {start_time} {self.timezone}")
@@ -115,6 +117,8 @@ class ReviewScheduler:
             id=self._report_job_id,
             replace_existing=True,
             name="Morning Report Delivery",
+            misfire_grace_time=3600,
+            coalesce=True,
         )
 
         logger.info(f"Scheduled morning report at {delivery_time} {self.timezone}")

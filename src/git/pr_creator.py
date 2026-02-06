@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from github import Github, GithubException, RateLimitExceededException
+from github import Github, GithubException
 
 from src.git.rate_limiter import GitHubRateLimiter, RateLimitExhausted
 from src.models import GithubIssue
@@ -151,34 +151,29 @@ class PRCreator:
         body: str,
     ) -> PRResult:
         """Internal PR creation method with retry logic."""
+        repo = self.github.get_repo(repo_full_name)
+
+        pr = repo.create_pull(
+            title=title,
+            body=body,
+            head=branch_name,
+            base=base_branch,
+        )
+
+        # Add lucidpulls label for efficient future lookups
         try:
-            repo = self.github.get_repo(repo_full_name)
+            self._ensure_label_exists(repo_full_name)
+            pr.add_to_labels(LUCIDPULLS_LABEL)
+        except Exception as e:
+            logger.debug(f"Could not add label to PR: {e}")
 
-            pr = repo.create_pull(
-                title=title,
-                body=body,
-                head=branch_name,
-                base=base_branch,
-            )
+        logger.info(f"Created PR #{pr.number}: {title}")
 
-            # Add lucidpulls label for efficient future lookups
-            try:
-                self._ensure_label_exists(repo_full_name)
-                pr.add_to_labels(LUCIDPULLS_LABEL)
-            except Exception as e:
-                logger.debug(f"Could not add label to PR: {e}")
-
-            logger.info(f"Created PR #{pr.number}: {title}")
-
-            return PRResult(
-                success=True,
-                pr_number=pr.number,
-                pr_url=pr.html_url,
-            )
-        except RateLimitExceededException:
-            # Wait for rate limit reset before retrying
-            self._rate_limiter._check_quota()
-            raise
+        return PRResult(
+            success=True,
+            pr_number=pr.number,
+            pr_url=pr.html_url,
+        )
 
     def get_open_issues(
         self,

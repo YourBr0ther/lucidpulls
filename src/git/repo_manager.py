@@ -4,6 +4,7 @@ import logging
 import os
 import shlex
 import shutil
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,6 +66,7 @@ class RepoManager:
 
         # Track open Repo objects to close them properly
         self._open_repos: dict[str, Repo] = {}
+        self._repos_lock = threading.Lock()
 
         # Set up SSH environment if key is provided
         self._setup_ssh_env()
@@ -219,7 +221,8 @@ class RepoManager:
             self._configure_git_user(repo)
 
             # Track the repo for cleanup
-            self._open_repos[repo_full_name] = repo
+            with self._repos_lock:
+                self._open_repos[repo_full_name] = repo
 
             return RepoInfo(
                 name=name,
@@ -424,8 +427,9 @@ class RepoManager:
         Args:
             repo_full_name: Full repository name (owner/repo).
         """
-        if repo_full_name in self._open_repos:
-            repo = self._open_repos.pop(repo_full_name)
+        with self._repos_lock:
+            repo = self._open_repos.pop(repo_full_name, None)
+        if repo is not None:
             try:
                 repo.close()
             except Exception as e:
@@ -434,7 +438,9 @@ class RepoManager:
     def close(self) -> None:
         """Close all open repository connections."""
         # Close all tracked Repo objects
-        for repo_name in list(self._open_repos.keys()):
+        with self._repos_lock:
+            repo_names = list(self._open_repos.keys())
+        for repo_name in repo_names:
             self.close_repo(repo_name)
 
         # Clean up SSH environment

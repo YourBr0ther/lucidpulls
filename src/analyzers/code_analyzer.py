@@ -6,7 +6,7 @@ import os
 import subprocess
 import tempfile
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Literal, Optional
 
 import httpx
@@ -39,7 +39,8 @@ class LLMFixResponse(BaseModel):
     def validate_file_path(cls, v: str) -> str:
         """Reject suspicious file paths from LLM output."""
         if v and ("\x00" in v or v.startswith("/")
-                or ".." in v.split("/") or ".." in v.split("\\")):
+                or ".." in PurePosixPath(v).parts
+                or ".." in PureWindowsPath(v).parts):
             raise ValueError(f"Suspicious file_path: {v!r}")
         return v
 
@@ -71,7 +72,7 @@ class CodeAnalyzer(BaseAnalyzer):
         max_attempts=2,
         delay=2.0,
         backoff=2.0,
-        exceptions=(ValueError, ConnectionError, TimeoutError, OSError, httpx.TimeoutException),
+        exceptions=(ValueError, ConnectionError, TimeoutError, OSError, httpx.RequestError),
     )
     def _call_llm_with_retry(self, prompt: str, system_prompt: str) -> "LLMResponse":
         """Call LLM with retry logic.

@@ -17,7 +17,7 @@ from src.analyzers.base import (
     SCORE_TEST_FILE,
     SCORE_INIT_FILE,
 )
-from src.analyzers.code_analyzer import CodeAnalyzer
+from src.analyzers.code_analyzer import CodeAnalyzer, LLMFixResponse
 from src.analyzers.issue_analyzer import IssueAnalyzer
 
 
@@ -274,6 +274,40 @@ class TestCodeAnalyzerApplyFixSecurity:
         with tempfile.TemporaryDirectory() as tmpdir:
             result = analyzer.apply_fix(Path(tmpdir), fix)
             assert result is False
+
+    def test_apply_fix_prevents_mixed_separator_traversal(self):
+        """Test that mixed separator path traversal (e.g. src/..\\etc) is blocked."""
+        analyzer = CodeAnalyzer(Mock())
+        fix = FixSuggestion(
+            file_path="src/..\\etc/passwd",
+            bug_description="Bug",
+            fix_description="Fix",
+            original_code="old",
+            fixed_code="new",
+            pr_title="Title",
+            pr_body="Body",
+            confidence="high",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = analyzer.apply_fix(Path(tmpdir), fix)
+            assert result is False
+
+    def test_llm_response_validator_rejects_mixed_separator_traversal(self):
+        """Test that the Pydantic validator rejects mixed-separator traversal."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="Suspicious file_path"):
+            LLMFixResponse(
+                found_bug=True,
+                file_path="src/..\\etc/passwd",
+                bug_description="Bug",
+                fix_description="Fix",
+                original_code="old",
+                fixed_code="new",
+                pr_title="Title",
+                pr_body="Body",
+                confidence="high",
+            )
 
     def test_apply_fix_rejects_multiple_matches(self):
         """Test that ambiguous fixes with multiple matches are rejected."""
