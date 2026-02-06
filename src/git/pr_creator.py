@@ -205,13 +205,13 @@ class PRCreator:
             enhancement_issues: list = []
             try:
                 bug_issues = list(repo.get_issues(state="open", labels=["bug"])[:limit])
-            except (GithubException, IndexError):
+            except GithubException:
                 pass
             try:
                 enhancement_issues = list(
                     repo.get_issues(state="open", labels=["enhancement"])[:limit]
                 )
-            except (GithubException, IndexError):
+            except GithubException:
                 pass
 
             all_issues = bug_issues + enhancement_issues

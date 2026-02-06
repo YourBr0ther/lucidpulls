@@ -303,6 +303,80 @@ class TestAlembicMigrations:
             history2.close()
 
 
+class TestTokenAggregation:
+    """Tests for LLM token aggregation in build_report."""
+
+    def test_build_report_sums_tokens_across_prs(self):
+        """Token counts from multiple PRs should be summed in the report."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            history = ReviewHistory(db_path=f"{tmpdir}/test.db")
+            run_id = history.start_run()
+            history.record_pr(
+                run_id, "owner/repo1", success=True, pr_number=1,
+                pr_title="Fix 1", llm_tokens_used=500,
+            )
+            history.record_pr(
+                run_id, "owner/repo2", success=True, pr_number=2,
+                pr_title="Fix 2", llm_tokens_used=300,
+            )
+            history.complete_run(run_id, repos_reviewed=2, prs_created=2)
+
+            report = history.build_report(run_id)
+            assert report.llm_tokens_used == 800
+            history.close()
+
+    def test_build_report_skips_none_tokens(self):
+        """PRs with None token count should be excluded from sum."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            history = ReviewHistory(db_path=f"{tmpdir}/test.db")
+            run_id = history.start_run()
+            history.record_pr(
+                run_id, "owner/repo1", success=True, pr_number=1,
+                pr_title="Fix 1", llm_tokens_used=500,
+            )
+            history.record_pr(
+                run_id, "owner/repo2", success=False, error="No fix",
+            )
+            history.complete_run(run_id, repos_reviewed=2, prs_created=1)
+
+            report = history.build_report(run_id)
+            assert report.llm_tokens_used == 500
+            history.close()
+
+    def test_build_report_returns_none_when_no_tokens(self):
+        """Total should be None when no PRs have token data."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            history = ReviewHistory(db_path=f"{tmpdir}/test.db")
+            run_id = history.start_run()
+            history.record_pr(run_id, "owner/repo1", success=False, error="No fix")
+            history.complete_run(run_id, repos_reviewed=1, prs_created=0)
+
+            report = history.build_report(run_id)
+            assert report.llm_tokens_used is None
+            history.close()
+
+
+class TestErrorPaths:
+    """Tests for database error handling paths."""
+
+    def test_complete_run_returns_false_on_invalid_id(self):
+        """complete_run should return True but log warning for missing run."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            history = ReviewHistory(db_path=f"{tmpdir}/test.db")
+            # Run ID 999 doesn't exist - should still return True (no exception)
+            result = history.complete_run(999, repos_reviewed=0, prs_created=0)
+            assert result is True
+            history.close()
+
+    def test_build_report_returns_none_for_missing_run(self):
+        """build_report should return None for non-existent run."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            history = ReviewHistory(db_path=f"{tmpdir}/test.db")
+            report = history.build_report(999)
+            assert report is None
+            history.close()
+
+
 class TestRejectedFixes:
     """Tests for rejected fix memory."""
 

@@ -39,6 +39,18 @@ class TestReviewReport:
         )
         assert report.duration_str == "2h 30m"
 
+    def test_duration_str_zero(self):
+        """Test duration string when start equals end."""
+        report = ReviewReport(
+            date=datetime.now(),
+            repos_reviewed=0,
+            prs_created=0,
+            prs=[],
+            start_time=datetime(2024, 1, 1, 2, 0),
+            end_time=datetime(2024, 1, 1, 2, 0),
+        )
+        assert report.duration_str == "0m"
+
 
 def _make_report(successful_prs=None, skipped_prs=None):
     """Helper to build a ReviewReport with successful and skipped PRs."""

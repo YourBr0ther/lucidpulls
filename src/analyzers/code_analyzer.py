@@ -601,11 +601,12 @@ class CodeAnalyzer(BaseAnalyzer):
             True if syntax is valid, or if javac is not installed (fail-open).
         """
         try:
-            result = subprocess.run(
-                ["javac", "-d", "/dev/null", "-proc:none", str(file_path)],
-                capture_output=True,
-                timeout=15,
-            )
+            with tempfile.TemporaryDirectory() as tmpdir:
+                result = subprocess.run(
+                    ["javac", "-d", tmpdir, "-proc:none", str(file_path)],
+                    capture_output=True,
+                    timeout=15,
+                )
             # javac returns 0 on success; non-zero includes both syntax and
             # type errors.  Only reject on clear syntax issues (same approach
             # as TS: accept import/type errors since we compile a single file).

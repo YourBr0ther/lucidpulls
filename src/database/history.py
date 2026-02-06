@@ -104,8 +104,11 @@ class ReviewHistory:
             # Rotate: keep only the N most recent backups
             backups = sorted(backup_dir.glob("lucidpulls_*.db"))
             for old_backup in backups[:-backup_count]:
-                old_backup.unlink()
-                logger.debug(f"Deleted old backup: {old_backup}")
+                try:
+                    old_backup.unlink()
+                    logger.debug(f"Deleted old backup: {old_backup}")
+                except OSError as e:
+                    logger.warning(f"Failed to delete old backup {old_backup}: {e}")
 
             return str(backup_path)
         except Exception as e:
