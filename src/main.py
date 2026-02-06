@@ -493,8 +493,11 @@ class LucidPulls:
         tz = pytz.timezone(self.settings.timezone)
         now_local = datetime.now(tz)
         today = now_local.date()
-        # run.started_at is naive UTC, make it aware then convert to local
-        run_started_local = pytz.utc.localize(run.started_at).astimezone(tz)
+        # run.started_at is typically naive UTC; handle both naive and aware
+        if run.started_at.tzinfo is None:
+            run_started_local = pytz.utc.localize(run.started_at).astimezone(tz)
+        else:
+            run_started_local = run.started_at.astimezone(tz)
         run_date = run_started_local.date()
 
         # Allow runs that started yesterday evening (before midnight) to match today's report,

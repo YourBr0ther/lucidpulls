@@ -344,8 +344,16 @@ class CodeAnalyzer(BaseAnalyzer):
         i = 0
         while i < len(text):
             ch = text[i]
-            if ch == '"' and (i == 0 or text[i - 1] != "\\"):
-                in_string = not in_string
+            if ch == '"':
+                # Count consecutive preceding backslashes
+                backslash_count = 0
+                j = i - 1
+                while j >= 0 and text[j] == "\\":
+                    backslash_count += 1
+                    j -= 1
+                # Quote is escaped only if preceded by odd number of backslashes
+                if backslash_count % 2 == 0:
+                    in_string = not in_string
                 result.append(ch)
             elif ch == "\n" and in_string:
                 result.append("\\n")

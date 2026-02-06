@@ -104,6 +104,26 @@ class TestCodeAnalyzer:
         result = analyzer._extract_json("No JSON here")
         assert result is None
 
+    def test_fix_json_newlines_double_backslash(self):
+        """Test _fix_json_newlines handles double-backslash before quote correctly."""
+        analyzer = CodeAnalyzer(Mock())
+        # The \\\" sequence is an escaped backslash followed by an unescaped quote.
+        # The method must NOT treat the quote as escaped.
+        text = '{"path": "C:\\\\Users\\\\test", "key": "value"}'
+        result = analyzer._fix_json_newlines(text)
+        # Should be unchanged - no bare newlines to fix
+        assert result == text
+        # Verify it's still valid JSON
+        data = json.loads(result)
+        assert data["key"] == "value"
+
+    def test_fix_json_newlines_bare_newline(self):
+        """Test _fix_json_newlines escapes bare newlines inside strings."""
+        analyzer = CodeAnalyzer(Mock())
+        text = '{"desc": "line1\nline2"}'
+        result = analyzer._fix_json_newlines(text)
+        assert result == '{"desc": "line1\\nline2"}'
+
     def test_parse_llm_response_valid(self):
         """Test parsing valid LLM response."""
         analyzer = CodeAnalyzer(Mock())

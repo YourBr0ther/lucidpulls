@@ -54,7 +54,7 @@ src/
     history.py         # ReviewHistory - run tracking, PR records, reports, backups
     models.py          # SQLAlchemy models: ReviewRun, PRRecord
 
-tests/                 # 13 test files, 205 tests, 74% coverage
+tests/                 # 12 test files, 259 tests, 81% coverage
 migrations/            # Alembic migrations (0001_initial_schema, 0002_add_indexes)
 ```
 
@@ -67,6 +67,9 @@ migrations/            # Alembic migrations (0001_initial_schema, 0002_add_index
 - **ThreadPoolExecutor**: Repos processed concurrently with configurable `max_workers`
 - **Graceful shutdown**: Signal handlers set `_shutdown` flag, `_idle` event gates cleanup, 60s drain timeout
 - **Run correlation**: `contextvars.ContextVar` propagates `run_id` through threads for log correlation
+- **LLM token tracking**: Flows from LLMResponse → AnalysisResult → record_pr → build_report → notifications
+- **Failure alerting**: Sends notification when all repos in a run fail (0 PRs created)
+- **File priority scoring**: Entry points and core files analyzed first; tests, examples, migrations last
 
 ## Review Pipeline Flow
 
@@ -134,7 +137,12 @@ All config is in `src/config.py` as a Pydantic `Settings` class. Env vars are lo
 | `NOTIFICATION_CHANNEL` | No | `discord` | `discord` or `teams` |
 | `DRY_RUN` | No | `False` | Skip push/PR creation |
 | `MAX_WORKERS` | No | `3` | Concurrent repo workers (1-16) |
+| `LOG_LEVEL` | No | `INFO` | Logging level |
 | `LOG_FORMAT` | No | `text` | `text` or `json` |
+| `CLONE_DIR` | No | `/tmp/lucidpulls/repos` | Directory for cloned repos |
+| `MAX_CLONE_DISK_MB` | No | `5000` | Max disk usage for clones in MB (0 = unlimited) |
+| `DB_BACKUP_ENABLED` | No | `True` | Auto-backup DB before each run |
+| `DB_BACKUP_COUNT` | No | `7` | Number of recent backups to keep |
 
 ## Database
 

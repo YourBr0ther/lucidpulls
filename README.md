@@ -40,10 +40,12 @@ LucidPulls runs overnight, reviews your repos with an LLM, and opens pull reques
 | | Feature | Description |
 |:---:|:---|:---|
 | **Scheduled** | **Nightly Review** | Runs on a configurable schedule — start time, deadline, and report delivery |
-| **Analysis** | **Repository Scanning** | Clones or pulls latest code, fetches open issues, sends everything to an LLM |
+| **Analysis** | **Smart File Selection** | Priority-scored file selection (entry points first, tests last) with LLM analysis |
 | **Fixes** | **Automated PRs** | Creates branches, commits, and pull requests for high-confidence bug fixes |
 | **Flexible** | **Multiple LLM Backends** | Azure AI Studios, NanoGPT, or Ollama for fully local, private analysis |
-| **Reports** | **Morning Notifications** | Summary of all PRs and findings delivered via Discord or Microsoft Teams |
+| **Reports** | **Morning Notifications** | Summary of all PRs, LLM token usage, and findings via Discord or Teams |
+| **Resilient** | **Failure Alerting** | Sends a notification when a run completes with zero PRs across all repos |
+| **Safe** | **Dry-Run Mode** | Full pipeline minus push/PR creation for safe testing and validation |
 
 <br>
 
@@ -68,10 +70,12 @@ pip install -r requirements.txt
 ### Run
 
 ```bash
-python -m src.main              # start the scheduled service
-python -m src.main --run-now    # run a review immediately
+python -m src.main                      # start the scheduled service
+python -m src.main --run-now            # run a review immediately
+python -m src.main --run-now --dry-run  # analyze without pushing (best for testing)
 python -m src.main --send-report        # send today's report now
 python -m src.main --test-notifications # verify webhook delivery
+python -m src.main --health-check       # Docker health check (exit 0/1)
 python -m src.main --debug              # enable debug logging
 ```
 
@@ -134,6 +138,7 @@ REPOS=owner/repo1,owner/repo2
 GITHUB_TOKEN=ghp_xxxxxxxxxxxxx
 GITHUB_USERNAME=YourUsername
 GITHUB_EMAIL=your@email.com
+SSH_KEY_PATH=~/.ssh/id_rsa          # optional, defaults to ~/.ssh/id_rsa
 
 # --- LLM Provider (azure | nanogpt | ollama) ---
 LLM_PROVIDER=ollama
@@ -149,6 +154,12 @@ SCHEDULE_START=02:00
 SCHEDULE_DEADLINE=06:00
 REPORT_DELIVERY=07:00
 TIMEZONE=America/New_York
+
+# --- Runtime ---
+DRY_RUN=False                       # skip push/PR creation
+MAX_WORKERS=3                       # concurrent repo workers (1-16)
+LOG_LEVEL=INFO
+LOG_FORMAT=text                     # text or json
 ```
 
 <br>
@@ -222,6 +233,7 @@ LucidPulls is built to fail gracefully. No single failure crashes the service or
 | **Deadline reached** | Current repo finishes; remaining repos skipped | Adjust `SCHEDULE_DEADLINE` if needed |
 | **SIGINT / SIGTERM** | Waits up to 60s for in-flight work, then shuts down | Graceful shutdown |
 | **Database error** | Logged; review continues with potentially incomplete history | Check `data/` permissions |
+| **All repos fail** | Failure alert sent via notification channel | Investigate LLM/repo issues |
 
 </details>
 

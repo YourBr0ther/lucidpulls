@@ -6,7 +6,7 @@ from typing import Optional
 
 from github import Github, GithubException, RateLimitExceededException
 
-from src.git.rate_limiter import GitHubRateLimiter
+from src.git.rate_limiter import GitHubRateLimiter, RateLimitExhausted
 from src.models import GithubIssue
 from src.utils import retry
 
@@ -141,7 +141,7 @@ class PRCreator:
             logger.error(f"Unexpected error creating PR: {e}")
             return PRResult(success=False, error=str(e))
 
-    @retry(max_attempts=3, delay=2.0, backoff=2.0, exceptions=(GithubException,))
+    @retry(max_attempts=3, delay=2.0, backoff=2.0, exceptions=(GithubException, RateLimitExhausted))
     def _create_pr_with_retry(
         self,
         repo_full_name: str,
