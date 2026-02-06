@@ -57,13 +57,6 @@ class TeamsNotifier(BaseNotifier):
         response = self._client.post(self.webhook_url, json=payload)
         response.raise_for_status()
 
-    @staticmethod
-    def _truncate(text: str, max_len: int = 120) -> str:
-        """Truncate text to max_len, adding ellipsis if needed."""
-        if len(text) <= max_len:
-            return text
-        return text[: max_len - 1] + "\u2026"
-
     def _build_teams_payload(self, report: ReviewReport) -> dict:
         """Build Teams Adaptive Card payload.
 

@@ -68,6 +68,7 @@ class BaseHTTPLLM(BaseLLM):
 
     Uses thread-local httpx.Client instances so concurrent workers
     in the ThreadPoolExecutor each get their own connection pool.
+    All created clients are tracked for proper cleanup on close().
     """
 
     def __init__(self, timeout: float = DEFAULT_TIMEOUT):
@@ -78,19 +79,28 @@ class BaseHTTPLLM(BaseLLM):
         """
         self._timeout = timeout
         self._local = threading.local()
+        self._all_clients: list[httpx.Client] = []
+        self._clients_lock = threading.Lock()
 
     @property
     def _client(self) -> httpx.Client:
         """Return a thread-local httpx.Client, creating one if needed."""
         if not hasattr(self._local, "client"):
-            self._local.client = httpx.Client(timeout=self._timeout)
+            client = httpx.Client(timeout=self._timeout)
+            self._local.client = client
+            with self._clients_lock:
+                self._all_clients.append(client)
         return self._local.client
 
     def close(self) -> None:
-        """Close the HTTP client for the current thread."""
-        if hasattr(self, "_local") and hasattr(self._local, "client"):
-            self._local.client.close()
-            del self._local.client
+        """Close all HTTP clients across all threads."""
+        with self._clients_lock:
+            for client in self._all_clients:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+            self._all_clients.clear()
 
     def __enter__(self) -> "BaseHTTPLLM":
         return self

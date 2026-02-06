@@ -21,8 +21,10 @@ from src.utils import sanitize_branch_name
 from src.config import load_settings, Settings
 from src.database import ReviewHistory
 from src.git import RepoManager, PRCreator, GitHubRateLimiter, RateLimitExhausted
+from src.git.repo_manager import RepoInfo
 from src.llm import get_llm
 from src.analyzers import CodeAnalyzer, IssueAnalyzer
+from src.analyzers.base import FixSuggestion
 from src.models import PRSummary, ReviewReport
 from src.notifications import get_notifier
 from src.scheduler import ReviewScheduler, DeadlineEnforcer, _write_heartbeat
@@ -43,9 +45,13 @@ class LucidPulls:
 
         # Shutdown coordination
         self._shutdown_requested = threading.Event()
-        self._idle = threading.Event()
-        self._idle.set()
         self._shutdown_event = threading.Event()
+
+        # Track active repo workers so shutdown waits for ALL of them
+        self._active_workers = 0
+        self._active_workers_lock = threading.Lock()
+        self._all_idle = threading.Event()
+        self._all_idle.set()
 
         # Single shared GitHub client
         self._github = Github(auth=Auth.Token(self.settings.github_token), timeout=30)
@@ -174,7 +180,9 @@ class LucidPulls:
         logger.info(f"Processing {repo_name}")
 
         try:
-            self._idle.clear()
+            with self._active_workers_lock:
+                self._active_workers += 1
+                self._all_idle.clear()
 
             # Clone or pull the repository
             try:
@@ -214,9 +222,12 @@ class LucidPulls:
             return False
         finally:
             _write_heartbeat()
-            self._idle.set()
+            with self._active_workers_lock:
+                self._active_workers -= 1
+                if self._active_workers == 0:
+                    self._all_idle.set()
 
-    def _analyze_and_fix(self, repo_name: str, repo_info: object, run_id: int) -> bool:
+    def _analyze_and_fix(self, repo_name: str, repo_info: RepoInfo, run_id: int) -> bool:
         """Run analysis and apply fix for a repo. Separated for resource cleanup.
 
         Args:
@@ -453,7 +464,7 @@ class LucidPulls:
         return True
 
     @staticmethod
-    def _build_pr_body(fix: object) -> str:
+    def _build_pr_body(fix: FixSuggestion) -> str:
         """Build a structured PR body from a FixSuggestion.
 
         Args:
@@ -525,7 +536,7 @@ class LucidPulls:
         diff = difflib.unified_diff(
             original_lines, fixed_lines, lineterm=""
         )
-        # Skip the --- / +++ / @@ headers from unified_diff, keep the content
+        # Include all unified diff lines (headers + content) for readable PR display
         lines = []
         for line in diff:
             # Strip trailing newlines for clean rendering
@@ -533,7 +544,7 @@ class LucidPulls:
         return lines
 
     @staticmethod
-    def _compute_fix_hash(fix: object) -> str:
+    def _compute_fix_hash(fix: FixSuggestion) -> str:
         """Compute a stable hash for a fix to detect duplicates.
 
         Args:
@@ -728,10 +739,9 @@ class LucidPulls:
         self.scheduler.start()
 
         # Cleanup after scheduler exits (e.g. from signal handler)
-        if not self._idle.is_set():
-            logger.info("Waiting for in-progress repo operation to finish...")
-            self._idle.wait(timeout=60)
-        self.close()
+        if not self._all_idle.is_set():
+            logger.info("Waiting for in-progress repo operations to finish...")
+            self._all_idle.wait(timeout=60)
 
     def _signal_handler(self, signum: int, frame: object) -> None:
         """Handle shutdown signals gracefully.

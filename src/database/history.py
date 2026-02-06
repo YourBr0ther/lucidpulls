@@ -33,11 +33,14 @@ class ReviewHistory:
         self.db_url = f"sqlite:///{db_path}"
         self.engine = create_engine(self.db_url, echo=False)
 
-        # Enable WAL mode for better crash recovery and concurrent reads
+        # Enable WAL mode for better crash recovery and concurrent reads,
+        # and set a busy timeout so concurrent ThreadPoolExecutor workers
+        # retry on write contention instead of immediately failing.
         @event.listens_for(self.engine, "connect")
-        def _set_wal_mode(dbapi_connection, connection_record):
+        def _set_sqlite_pragmas(dbapi_connection, connection_record):
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
             cursor.close()
 
         # expire_on_commit=False prevents detached instance errors when accessing
@@ -60,19 +63,26 @@ class ReviewHistory:
         from alembic import command
         from sqlalchemy import inspect
 
-        alembic_cfg = Config()
-        migrations_dir = str(Path(__file__).parent.parent.parent / "migrations")
-        alembic_cfg.set_main_option("script_location", migrations_dir)
-        alembic_cfg.set_main_option("sqlalchemy.url", self.db_url)
-        alembic_cfg.attributes["engine"] = self.engine
+        try:
+            alembic_cfg = Config()
+            migrations_dir = str(Path(__file__).parent.parent.parent / "migrations")
+            alembic_cfg.set_main_option("script_location", migrations_dir)
+            alembic_cfg.set_main_option("sqlalchemy.url", self.db_url)
+            alembic_cfg.attributes["engine"] = self.engine
 
-        inspector = inspect(self.engine)
-        tables = inspector.get_table_names()
-        if tables and "alembic_version" not in tables:
-            # Existing DB created before Alembic was added — stamp current revision
-            command.stamp(alembic_cfg, "0001")
+            inspector = inspect(self.engine)
+            tables = inspector.get_table_names()
+            if tables and "alembic_version" not in tables:
+                # Existing DB created before Alembic was added — stamp current revision
+                command.stamp(alembic_cfg, "0001")
 
-        command.upgrade(alembic_cfg, "head")
+            command.upgrade(alembic_cfg, "head")
+        except Exception as e:
+            logger.error(f"Database migration failed: {e}")
+            raise RuntimeError(
+                f"Failed to run database migrations: {e}. "
+                f"Check database at {self.db_path} for corruption."
+            ) from e
 
     def backup_database(self, backup_count: int = 7) -> Optional[str]:
         """Create a backup of the database using SQLite's backup API.
@@ -87,7 +97,7 @@ class ReviewHistory:
             backup_dir = Path(self.db_path).parent / "backups"
             backup_dir.mkdir(parents=True, exist_ok=True)
 
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
             backup_path = backup_dir / f"lucidpulls_{timestamp}.db"
 
             # Use sqlite3 backup API for a consistent snapshot
