@@ -130,6 +130,57 @@ class TestReviewHistory:
 
             assert latest.id == run_id2
 
+    def test_record_pr_with_bug_description(self):
+        """Test recording a PR with bug_description round-trips through DB."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            history = ReviewHistory(db_path=f"{tmpdir}/test.db")
+
+            run_id = history.start_run()
+            history.record_pr(
+                run_id,
+                "owner/repo",
+                pr_number=10,
+                pr_url="https://github.com/owner/repo/pull/10",
+                pr_title="Fix null check",
+                success=True,
+                bug_description="Missing null check causes crash on empty input",
+            )
+
+            prs = history.get_run_prs(run_id)
+            assert len(prs) == 1
+            assert prs[0].bug_description == "Missing null check causes crash on empty input"
+
+    def test_build_report_includes_bug_description(self):
+        """Test that build_report passes bug_description to PRSummary."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            history = ReviewHistory(db_path=f"{tmpdir}/test.db")
+
+            run_id = history.start_run()
+            history.record_pr(
+                run_id,
+                "owner/repo1",
+                pr_number=42,
+                pr_url="https://github.com/owner/repo1/pull/42",
+                pr_title="Fix bug",
+                success=True,
+                bug_description="Off-by-one in loop bounds",
+            )
+            history.complete_run(run_id, repos_reviewed=1, prs_created=1)
+
+            report = history.build_report(run_id)
+            assert report.prs[0].bug_description == "Off-by-one in loop bounds"
+
+    def test_record_pr_without_bug_description(self):
+        """Test that bug_description defaults to None."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            history = ReviewHistory(db_path=f"{tmpdir}/test.db")
+
+            run_id = history.start_run()
+            history.record_pr(run_id, "owner/repo", success=False, error="No fixes")
+
+            prs = history.get_run_prs(run_id)
+            assert prs[0].bug_description is None
+
     def test_build_report(self):
         """Test building a review report."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -230,11 +281,11 @@ class TestAlembicMigrations:
             tables = inspector.get_table_names()
             assert "alembic_version" in tables
 
-            # Verify stamp is at head (0002 after index migration)
+            # Verify stamp is at head (0003 after bug_description migration)
             with history.engine.connect() as conn:
                 result = conn.execute(text("SELECT version_num FROM alembic_version"))
                 version = result.scalar()
-                assert version == "0002"
+                assert version == "0003"
             history.close()
 
     def test_migration_idempotent(self):

@@ -389,10 +389,11 @@ class TestDryRun:
         agent.repo_manager.push_branch.assert_not_called()
         # cleanup_branch SHOULD be called (local cleanup)
         agent.repo_manager.cleanup_branch.assert_called_once()
-        # PR recorded with error="dry_run"
+        # PR recorded with error="dry_run" and bug_description
         record_call = mock_history.return_value.record_pr.call_args
         assert record_call[1]["error"] == "dry_run"
         assert record_call[1]["success"] is True
+        assert record_call[1]["bug_description"] == "Something is broken"
 
     @patch("src.main.get_notifier")
     @patch("src.main.get_llm")
@@ -436,6 +437,9 @@ class TestDryRun:
 
         assert result is True
         agent.repo_manager.push_branch.assert_called_once()
+        # bug_description should be passed through to record_pr
+        record_call = mock_history.return_value.record_pr.call_args
+        assert record_call[1]["bug_description"] == "Something is broken"
 
 
 class TestHealthCheck:

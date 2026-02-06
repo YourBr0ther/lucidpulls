@@ -177,6 +177,7 @@ class ReviewHistory:
         error: Optional[str] = None,
         analysis_time: Optional[float] = None,
         llm_tokens_used: Optional[int] = None,
+        bug_description: Optional[str] = None,
     ) -> bool:
         """Record a PR creation result.
 
@@ -190,6 +191,7 @@ class ReviewHistory:
             error: Error message if failed.
             analysis_time: Time spent on analysis in seconds.
             llm_tokens_used: Number of LLM tokens consumed.
+            bug_description: Short description of the bug found.
 
         Returns:
             True if the database write succeeded.
@@ -206,6 +208,7 @@ class ReviewHistory:
                     error=error,
                     analysis_time=analysis_time,
                     llm_tokens_used=llm_tokens_used,
+                    bug_description=bug_description,
                 )
                 session.add(record)
                 session.commit()
@@ -292,6 +295,7 @@ class ReviewHistory:
                     pr_title=pr.pr_title,
                     success=pr.success,
                     error=pr.error,
+                    bug_description=pr.bug_description,
                 )
                 for pr in prs
             ]

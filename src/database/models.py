@@ -47,6 +47,7 @@ class PRRecord(Base):
     error = Column(Text, nullable=True)
     analysis_time = Column(Float, nullable=True)
     llm_tokens_used = Column(Integer, nullable=True)
+    bug_description = Column(Text, nullable=True)
     created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), index=True)
 
     # Relationship back to review run

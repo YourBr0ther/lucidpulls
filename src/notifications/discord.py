@@ -57,6 +57,13 @@ class DiscordNotifier(BaseNotifier):
         response = self._client.post(self.webhook_url, json=payload)
         response.raise_for_status()
 
+    @staticmethod
+    def _truncate(text: str, max_len: int = 120) -> str:
+        """Truncate text to max_len, adding ellipsis if needed."""
+        if len(text) <= max_len:
+            return text
+        return text[: max_len - 1] + "\u2026"
+
     def _build_discord_payload(self, report: ReviewReport) -> dict:
         """Build Discord webhook payload with embeds.
 
@@ -68,23 +75,31 @@ class DiscordNotifier(BaseNotifier):
         """
         date_str = report.date.strftime("%Y-%m-%d")
 
-        # Build embed fields for each PR
+        # Separate successful PRs from skipped repos
+        successful = [pr for pr in report.prs if pr.success]
+        skipped = [pr for pr in report.prs if not pr.success]
+
+        # Build embed fields for successful PRs only
         fields = []
-        for pr in report.prs:
-            if pr.success:
-                value = f"[PR #{pr.pr_number}]({pr.pr_url}): {pr.pr_title}"
-                fields.append({
-                    "name": f":white_check_mark: {pr.repo_name}",
-                    "value": value,
-                    "inline": False,
-                })
-            else:
-                value = pr.error if pr.error else "No actionable fixes identified"
-                fields.append({
-                    "name": f":fast_forward: {pr.repo_name}",
-                    "value": value,
-                    "inline": False,
-                })
+        for pr in successful:
+            value = f"[PR #{pr.pr_number}]({pr.pr_url}): {pr.pr_title}"
+            if pr.bug_description:
+                value += f"\n> {self._truncate(pr.bug_description)}"
+            fields.append({
+                "name": f":white_check_mark: {pr.repo_name}",
+                "value": value,
+                "inline": False,
+            })
+
+        # Collapse skipped repos into a single line
+        if skipped:
+            count = len(skipped)
+            noun = "repo" if count == 1 else "repos"
+            fields.append({
+                "name": ":fast_forward: Skipped",
+                "value": f"{count} {noun} reviewed with no actionable issues found",
+                "inline": False,
+            })
 
         # Build footer
         start_str = report.start_time.strftime("%H:%M")

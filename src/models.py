@@ -26,6 +26,7 @@ class PRSummary:
     pr_title: Optional[str]
     success: bool
     error: Optional[str] = None
+    bug_description: Optional[str] = None
 
 
 @dataclass

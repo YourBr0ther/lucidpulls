@@ -48,6 +48,13 @@ class BaseNotifier(ABC):
         """
         pass
 
+    @staticmethod
+    def _truncate(text: str, max_len: int = 120) -> str:
+        """Truncate text to max_len, adding ellipsis if needed."""
+        if len(text) <= max_len:
+            return text
+        return text[: max_len - 1] + "\u2026"
+
     def format_report(self, report: ReviewReport) -> str:
         """Format a report as plain text.
 
@@ -59,6 +66,9 @@ class BaseNotifier(ABC):
         """
         date_str = report.date.strftime("%Y-%m-%d")
 
+        successful = [pr for pr in report.prs if pr.success]
+        skipped = [pr for pr in report.prs if not pr.success]
+
         lines = [
             f"LucidPulls Morning Report - {date_str}",
             "",
@@ -67,17 +77,18 @@ class BaseNotifier(ABC):
             "",
         ]
 
-        for pr in report.prs:
-            if pr.success:
-                lines.append(f"[OK] {pr.repo_name}")
-                lines.append(f"    PR #{pr.pr_number}: {pr.pr_title}")
-                lines.append(f"    {pr.pr_url}")
-            else:
-                lines.append(f"[--] {pr.repo_name}")
-                if pr.error:
-                    lines.append(f"    {pr.error}")
-                else:
-                    lines.append("    No actionable fixes identified")
+        for pr in successful:
+            lines.append(f"[OK] {pr.repo_name}")
+            lines.append(f"    PR #{pr.pr_number}: {pr.pr_title}")
+            lines.append(f"    {pr.pr_url}")
+            if pr.bug_description:
+                lines.append(f"    Bug: {self._truncate(pr.bug_description)}")
+            lines.append("")
+
+        if skipped:
+            count = len(skipped)
+            noun = "repo" if count == 1 else "repos"
+            lines.append(f"[--] {count} {noun} reviewed with no actionable issues found")
             lines.append("")
 
         lines.append("---")

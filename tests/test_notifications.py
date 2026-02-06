@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 import pytest
 import httpx
 
-from src.notifications.base import NotificationResult, PRSummary, ReviewReport
+from src.notifications.base import BaseNotifier, NotificationResult, PRSummary, ReviewReport
 from src.notifications.discord import DiscordNotifier
 from src.notifications.teams import TeamsNotifier
 from src.notifications import get_notifier
@@ -38,6 +38,25 @@ class TestReviewReport:
             end_time=datetime(2024, 1, 1, 4, 30),
         )
         assert report.duration_str == "2h 30m"
+
+
+def _make_report(successful_prs=None, skipped_prs=None):
+    """Helper to build a ReviewReport with successful and skipped PRs."""
+    prs = []
+    if successful_prs:
+        prs.extend(successful_prs)
+    if skipped_prs:
+        prs.extend(skipped_prs)
+    total_success = len(successful_prs) if successful_prs else 0
+    total_repos = len(prs)
+    return ReviewReport(
+        date=datetime(2024, 1, 15),
+        repos_reviewed=total_repos,
+        prs_created=total_success,
+        prs=prs,
+        start_time=datetime(2024, 1, 15, 2, 0),
+        end_time=datetime(2024, 1, 15, 3, 0),
+    )
 
 
 class TestDiscordNotifier:
@@ -106,32 +125,26 @@ class TestDiscordNotifier:
         assert result.success is False
         assert "not configured" in result.error
 
-    def test_build_discord_payload(self):
-        """Test Discord payload building."""
+    def test_build_discord_payload_structure(self):
+        """Test Discord payload has correct structure with collapse."""
         notifier = DiscordNotifier(webhook_url="https://discord.com/api/webhooks/123/abc")
-        report = ReviewReport(
-            date=datetime(2024, 1, 15),
-            repos_reviewed=2,
-            prs_created=1,
-            prs=[
+        report = _make_report(
+            successful_prs=[
                 PRSummary(
                     repo_name="owner/repo1",
                     pr_number=42,
                     pr_url="https://github.com/owner/repo1/pull/42",
                     pr_title="Fix bug",
                     success=True,
-                ),
-                PRSummary(
-                    repo_name="owner/repo2",
-                    pr_number=None,
-                    pr_url=None,
-                    pr_title=None,
-                    success=False,
-                    error="No fixes found",
+                    bug_description="Null pointer in handler",
                 ),
             ],
-            start_time=datetime(2024, 1, 15, 2, 0),
-            end_time=datetime(2024, 1, 15, 3, 0),
+            skipped_prs=[
+                PRSummary(repo_name="owner/repo2", pr_number=None, pr_url=None,
+                          pr_title=None, success=False, error="No fixes found"),
+                PRSummary(repo_name="owner/repo3", pr_number=None, pr_url=None,
+                          pr_title=None, success=False, error="No fixes found"),
+            ],
         )
 
         payload = notifier._build_discord_payload(report)
@@ -139,8 +152,80 @@ class TestDiscordNotifier:
         assert "embeds" in payload
         embed = payload["embeds"][0]
         assert "2024-01-15" in embed["title"]
-        assert "2 repositories reviewed" in embed["description"]
+        assert "3 repositories reviewed" in embed["description"]
+        # 1 successful PR field + 1 collapsed skipped field = 2
         assert len(embed["fields"]) == 2
+        # First field: successful PR with bug description blockquote
+        assert ":white_check_mark:" in embed["fields"][0]["name"]
+        assert "> Null pointer in handler" in embed["fields"][0]["value"]
+        # Second field: collapsed skipped repos
+        assert ":fast_forward:" in embed["fields"][1]["name"]
+        assert "2 repos reviewed with no actionable issues found" in embed["fields"][1]["value"]
+
+    def test_build_discord_payload_truncates_bug_description(self):
+        """Test that bug descriptions longer than 120 chars are truncated."""
+        notifier = DiscordNotifier(webhook_url="https://discord.com/api/webhooks/123/abc")
+        long_desc = "A" * 200
+        report = _make_report(
+            successful_prs=[
+                PRSummary(
+                    repo_name="owner/repo1",
+                    pr_number=1,
+                    pr_url="https://github.com/owner/repo1/pull/1",
+                    pr_title="Fix",
+                    success=True,
+                    bug_description=long_desc,
+                ),
+            ],
+        )
+
+        payload = notifier._build_discord_payload(report)
+        value = payload["embeds"][0]["fields"][0]["value"]
+        # Extract the blockquote line
+        blockquote = [l for l in value.split("\n") if l.startswith(">")][0]
+        # "> " prefix + 120 chars max (119 chars + ellipsis)
+        assert len(blockquote) <= 2 + 120  # "> " + truncated text
+        assert blockquote.endswith("\u2026")
+
+    def test_build_discord_payload_no_skipped(self):
+        """Test payload when all repos have successful PRs (no skipped section)."""
+        notifier = DiscordNotifier(webhook_url="https://discord.com/api/webhooks/123/abc")
+        report = _make_report(
+            successful_prs=[
+                PRSummary(
+                    repo_name="owner/repo1",
+                    pr_number=1,
+                    pr_url="https://github.com/owner/repo1/pull/1",
+                    pr_title="Fix A",
+                    success=True,
+                ),
+            ],
+        )
+
+        payload = notifier._build_discord_payload(report)
+        fields = payload["embeds"][0]["fields"]
+        assert len(fields) == 1
+        assert ":white_check_mark:" in fields[0]["name"]
+
+    def test_build_discord_payload_no_bug_description(self):
+        """Test payload when bug_description is None (no blockquote)."""
+        notifier = DiscordNotifier(webhook_url="https://discord.com/api/webhooks/123/abc")
+        report = _make_report(
+            successful_prs=[
+                PRSummary(
+                    repo_name="owner/repo1",
+                    pr_number=1,
+                    pr_url="https://github.com/owner/repo1/pull/1",
+                    pr_title="Fix A",
+                    success=True,
+                    bug_description=None,
+                ),
+            ],
+        )
+
+        payload = notifier._build_discord_payload(report)
+        value = payload["embeds"][0]["fields"][0]["value"]
+        assert ">" not in value
 
 
 class TestTeamsNotifier:
@@ -203,24 +288,24 @@ class TestTeamsNotifier:
         result = notifier.send_report(report)
         assert result.success is True
 
-    def test_build_teams_payload(self):
-        """Test Teams payload building."""
+    def test_build_teams_payload_structure(self):
+        """Test Teams payload uses TextBlocks instead of FactSet."""
         notifier = TeamsNotifier(webhook_url="https://outlook.office.com/webhook/123")
-        report = ReviewReport(
-            date=datetime(2024, 1, 15),
-            repos_reviewed=1,
-            prs_created=1,
-            prs=[
+        report = _make_report(
+            successful_prs=[
                 PRSummary(
                     repo_name="owner/repo",
                     pr_number=42,
                     pr_url="https://github.com/owner/repo/pull/42",
                     pr_title="Fix bug",
                     success=True,
-                )
+                    bug_description="Off-by-one in loop",
+                ),
             ],
-            start_time=datetime(2024, 1, 15, 2, 0),
-            end_time=datetime(2024, 1, 15, 3, 0),
+            skipped_prs=[
+                PRSummary(repo_name="owner/repo2", pr_number=None, pr_url=None,
+                          pr_title=None, success=False, error="No fixes"),
+            ],
         )
 
         payload = notifier._build_teams_payload(report)
@@ -229,6 +314,147 @@ class TestTeamsNotifier:
         assert "attachments" in payload
         card = payload["attachments"][0]["content"]
         assert card["type"] == "AdaptiveCard"
+        # No FactSet elements
+        body_types = [block["type"] for block in card["body"]]
+        assert "FactSet" not in body_types
+        # All elements are TextBlocks
+        assert all(t == "TextBlock" for t in body_types)
+
+    def test_build_teams_payload_bug_description(self):
+        """Test Teams payload includes bug description in TextBlock."""
+        notifier = TeamsNotifier(webhook_url="https://outlook.office.com/webhook/123")
+        report = _make_report(
+            successful_prs=[
+                PRSummary(
+                    repo_name="owner/repo",
+                    pr_number=42,
+                    pr_url="https://github.com/owner/repo/pull/42",
+                    pr_title="Fix bug",
+                    success=True,
+                    bug_description="Off-by-one in loop",
+                ),
+            ],
+        )
+
+        payload = notifier._build_teams_payload(report)
+        card = payload["attachments"][0]["content"]
+        # Find the PR TextBlock (after title and summary)
+        pr_block = card["body"][2]
+        assert "Off-by-one in loop" in pr_block["text"]
+        assert "owner/repo" in pr_block["text"]
+
+    def test_build_teams_payload_collapse_skipped(self):
+        """Test Teams payload collapses skipped repos."""
+        notifier = TeamsNotifier(webhook_url="https://outlook.office.com/webhook/123")
+        report = _make_report(
+            skipped_prs=[
+                PRSummary(repo_name=f"owner/repo{i}", pr_number=None, pr_url=None,
+                          pr_title=None, success=False, error="No fixes")
+                for i in range(5)
+            ],
+        )
+
+        payload = notifier._build_teams_payload(report)
+        card = payload["attachments"][0]["content"]
+        # title + summary + 1 collapsed skipped + footer = 4 blocks
+        assert len(card["body"]) == 4
+        skipped_block = card["body"][2]
+        assert "5 repos reviewed with no actionable issues found" in skipped_block["text"]
+
+
+class TestPlainTextFormat:
+    """Tests for plain text report formatting."""
+
+    def _get_notifier(self):
+        """Get a concrete notifier for testing format_report."""
+        return DiscordNotifier(webhook_url="https://discord.com/api/webhooks/123/abc")
+
+    def test_format_report_collapse_skipped(self):
+        """Test plain text collapses skipped repos."""
+        notifier = self._get_notifier()
+        report = _make_report(
+            successful_prs=[
+                PRSummary(
+                    repo_name="owner/repo1",
+                    pr_number=1,
+                    pr_url="https://github.com/owner/repo1/pull/1",
+                    pr_title="Fix A",
+                    success=True,
+                ),
+            ],
+            skipped_prs=[
+                PRSummary(repo_name=f"owner/skip{i}", pr_number=None, pr_url=None,
+                          pr_title=None, success=False, error="No fixes")
+                for i in range(3)
+            ],
+        )
+
+        text = notifier.format_report(report)
+        assert "[OK] owner/repo1" in text
+        assert "3 repos reviewed with no actionable issues found" in text
+        # Individual skipped repos should NOT appear
+        assert "owner/skip0" not in text
+
+    def test_format_report_bug_description(self):
+        """Test plain text includes bug description."""
+        notifier = self._get_notifier()
+        report = _make_report(
+            successful_prs=[
+                PRSummary(
+                    repo_name="owner/repo1",
+                    pr_number=1,
+                    pr_url="https://github.com/owner/repo1/pull/1",
+                    pr_title="Fix A",
+                    success=True,
+                    bug_description="Null check missing",
+                ),
+            ],
+        )
+
+        text = notifier.format_report(report)
+        assert "Bug: Null check missing" in text
+
+    def test_format_report_no_skipped(self):
+        """Test plain text with no skipped repos omits the skipped line."""
+        notifier = self._get_notifier()
+        report = _make_report(
+            successful_prs=[
+                PRSummary(
+                    repo_name="owner/repo1",
+                    pr_number=1,
+                    pr_url="https://github.com/owner/repo1/pull/1",
+                    pr_title="Fix A",
+                    success=True,
+                ),
+            ],
+        )
+
+        text = notifier.format_report(report)
+        assert "no actionable issues" not in text
+
+    def test_format_report_truncates_bug_description(self):
+        """Test plain text truncates long bug descriptions."""
+        notifier = self._get_notifier()
+        long_desc = "B" * 200
+        report = _make_report(
+            successful_prs=[
+                PRSummary(
+                    repo_name="owner/repo1",
+                    pr_number=1,
+                    pr_url="https://github.com/owner/repo1/pull/1",
+                    pr_title="Fix A",
+                    success=True,
+                    bug_description=long_desc,
+                ),
+            ],
+        )
+
+        text = notifier.format_report(report)
+        bug_line = [l for l in text.split("\n") if l.strip().startswith("Bug:")][0]
+        # "    Bug: " prefix + 120 chars max
+        content_after_prefix = bug_line.strip().removeprefix("Bug: ")
+        assert len(content_after_prefix) == 120
+        assert content_after_prefix.endswith("\u2026")
 
 
 class TestDiscordRetry:

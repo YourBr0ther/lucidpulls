@@ -331,6 +331,7 @@ class LucidPulls:
                 error="dry_run",
                 analysis_time=result.analysis_time_seconds,
                 llm_tokens_used=result.llm_tokens_used,
+                bug_description=fix.bug_description,
             )
             return True
 
@@ -395,6 +396,7 @@ class LucidPulls:
             success=True,
             analysis_time=result.analysis_time_seconds,
             llm_tokens_used=result.llm_tokens_used,
+            bug_description=fix.bug_description,
         )
 
         logger.info(f"Created PR #{pr_result.pr_number}: {pr_result.pr_url}")
@@ -462,6 +464,7 @@ class LucidPulls:
                     pr_url="https://github.com/example/sample-repo/pull/42",
                     pr_title="Fix null check in request handler",
                     success=True,
+                    bug_description="Request handler crashes with NullPointerError when optional header is missing",
                 ),
                 PRSummary(
                     repo_name="example/other-repo",

@@ -57,6 +57,13 @@ class TeamsNotifier(BaseNotifier):
         response = self._client.post(self.webhook_url, json=payload)
         response.raise_for_status()
 
+    @staticmethod
+    def _truncate(text: str, max_len: int = 120) -> str:
+        """Truncate text to max_len, adding ellipsis if needed."""
+        if len(text) <= max_len:
+            return text
+        return text[: max_len - 1] + "\u2026"
+
     def _build_teams_payload(self, report: ReviewReport) -> dict:
         """Build Teams Adaptive Card payload.
 
@@ -70,22 +77,61 @@ class TeamsNotifier(BaseNotifier):
         start_str = report.start_time.strftime("%H:%M")
         end_str = report.end_time.strftime("%H:%M")
 
-        # Build facts for each PR
-        facts = []
-        for pr in report.prs:
-            if pr.success:
-                facts.append({
-                    "title": f"✅ {pr.repo_name}",
-                    "value": f"[PR #{pr.pr_number}]({pr.pr_url}): {pr.pr_title}",
-                })
-            else:
-                value = pr.error if pr.error else "No actionable fixes identified"
-                facts.append({
-                    "title": f"⏭️ {pr.repo_name}",
-                    "value": value,
-                })
+        # Separate successful PRs from skipped repos
+        successful = [pr for pr in report.prs if pr.success]
+        skipped = [pr for pr in report.prs if not pr.success]
+
+        # Build TextBlock elements for successful PRs
+        pr_blocks = []
+        for pr in successful:
+            text = f"✅ **{pr.repo_name}** — [PR #{pr.pr_number}]({pr.pr_url}): {pr.pr_title}"
+            if pr.bug_description:
+                text += f"\n\n> {self._truncate(pr.bug_description)}"
+            pr_blocks.append({
+                "type": "TextBlock",
+                "text": text,
+                "wrap": True,
+            })
+
+        # Collapse skipped repos into a single TextBlock
+        if skipped:
+            count = len(skipped)
+            noun = "repo" if count == 1 else "repos"
+            pr_blocks.append({
+                "type": "TextBlock",
+                "text": f"⏭️ {count} {noun} reviewed with no actionable issues found",
+                "wrap": True,
+                "isSubtle": True,
+            })
 
         # Build Adaptive Card
+        body = [
+            {
+                "type": "TextBlock",
+                "size": "Large",
+                "weight": "Bolder",
+                "text": f"\U0001f305 LucidPulls Morning Report - {date_str}",
+            },
+            {
+                "type": "TextBlock",
+                "text": (
+                    f"\U0001f4ca **Summary:** {report.repos_reviewed} repositories "
+                    f"reviewed, {report.prs_created} PRs created"
+                ),
+                "wrap": True,
+            },
+            *pr_blocks,
+            {
+                "type": "TextBlock",
+                "text": (
+                    f"Review window: {start_str} - {end_str} ({report.duration_str})"
+                    + (f" | Tokens: {report.llm_tokens_used:,}" if report.llm_tokens_used else "")
+                ),
+                "size": "Small",
+                "isSubtle": True,
+            },
+        ]
+
         card = {
             "type": "message",
             "attachments": [
@@ -96,35 +142,7 @@ class TeamsNotifier(BaseNotifier):
                         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
                         "type": "AdaptiveCard",
                         "version": "1.2",
-                        "body": [
-                            {
-                                "type": "TextBlock",
-                                "size": "Large",
-                                "weight": "Bolder",
-                                "text": f"🌅 LucidPulls Morning Report - {date_str}",
-                            },
-                            {
-                                "type": "TextBlock",
-                                "text": (
-                                    f"📊 **Summary:** {report.repos_reviewed} repositories "
-                                    f"reviewed, {report.prs_created} PRs created"
-                                ),
-                                "wrap": True,
-                            },
-                            {
-                                "type": "FactSet",
-                                "facts": facts,
-                            },
-                            {
-                                "type": "TextBlock",
-                                "text": (
-                                    f"Review window: {start_str} - {end_str} ({report.duration_str})"
-                                    + (f" | Tokens: {report.llm_tokens_used:,}" if report.llm_tokens_used else "")
-                                ),
-                                "size": "Small",
-                                "isSubtle": True,
-                            },
-                        ],
+                        "body": body,
                     },
                 }
             ],
