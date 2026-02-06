@@ -85,13 +85,14 @@ class NanoGPTLLM(BaseHTTPLLM):
         content = choices[0].get("message", {}).get("content", "")
         usage = data.get("usage", {})
 
-        logger.debug(f"Received response: {len(content)} characters")
+        finish_reason = choices[0].get("finish_reason")
+        logger.debug(f"Received response: {len(content)} characters, finish_reason={finish_reason}")
 
         return LLMResponse(
             content=content,
             model=self.model,
             tokens_used=usage.get("total_tokens"),
-            finish_reason=choices[0].get("finish_reason"),
+            finish_reason=finish_reason,
         )
 
     def is_available(self) -> bool:

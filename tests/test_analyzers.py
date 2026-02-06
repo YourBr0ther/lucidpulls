@@ -7,7 +7,16 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from src.analyzers.base import AnalysisResult, FixSuggestion
+from src.analyzers.base import (
+    AnalysisResult,
+    FixSuggestion,
+    SCORE_ENTRY_POINT,
+    SCORE_IMPORTANT_NAME,
+    SCORE_SOURCE_DIR,
+    SCORE_LOW_PRIORITY_DIR,
+    SCORE_TEST_FILE,
+    SCORE_INIT_FILE,
+)
 from src.analyzers.code_analyzer import CodeAnalyzer
 from src.analyzers.issue_analyzer import IssueAnalyzer
 
@@ -382,3 +391,78 @@ class TestIssueAnalyzer:
         score2 = analyzer._score_issue(issue2)
 
         assert score2.score > score1.score
+
+
+class TestFileScoring:
+    """Tests for BaseAnalyzer._score_file priority heuristics."""
+
+    def _score(self, rel_path_str: str, file_size: int = 5000) -> int:
+        """Helper to score a file path."""
+        analyzer = CodeAnalyzer(Mock())
+        return analyzer._score_file(Path(rel_path_str), file_size)
+
+    def test_entry_points_score_higher_than_regular(self):
+        """Entry point files (main, app, index) should score higher."""
+        entry_score = self._score("main.py")
+        regular_score = self._score("foo.py")
+        assert entry_score > regular_score
+
+    def test_source_dirs_score_higher_than_root(self):
+        """Files in src/ should score higher than files at root."""
+        src_score = self._score("src/foo.py")
+        root_score = self._score("foo.py")
+        assert src_score > root_score
+
+    def test_test_files_score_lower_than_production(self):
+        """Test files should score lower than production files."""
+        prod_score = self._score("src/handler.py")
+        test_score = self._score("tests/test_handler.py")
+        assert prod_score > test_score
+
+    def test_spec_files_detected_as_tests(self):
+        """Files with .spec. in name should be penalized as tests."""
+        regular_score = self._score("src/handler.ts")
+        spec_score = self._score("src/handler.spec.ts")
+        assert regular_score > spec_score
+
+    def test_dot_test_files_detected_as_tests(self):
+        """Files with .test. in name should be penalized as tests."""
+        regular_score = self._score("src/handler.js")
+        test_score = self._score("src/handler.test.js")
+        assert regular_score > test_score
+
+    def test_deeper_paths_score_lower(self):
+        """Files deeper in the tree should score lower than shallow ones."""
+        shallow = self._score("src/main.py")
+        deep = self._score("src/a/b/c/main.py")
+        assert shallow > deep
+
+    def test_sweet_spot_size_beats_tiny(self):
+        """Files in the sweet-spot size range should outscore tiny files."""
+        sweet = self._score("foo.py", file_size=5000)
+        tiny = self._score("foo.py", file_size=50)
+        assert sweet > tiny
+
+    def test_init_files_penalized(self):
+        """__init__.py files should be penalized."""
+        init_score = self._score("src/__init__.py")
+        regular_score = self._score("src/models.py")
+        assert regular_score > init_score
+
+    def test_examples_dir_penalized(self):
+        """Files in examples/ should score lower."""
+        src_score = self._score("src/handler.py")
+        examples_score = self._score("examples/handler.py")
+        assert src_score > examples_score
+
+    def test_conftest_detected_as_test(self):
+        """conftest.py should be penalized as a test file."""
+        regular_score = self._score("src/config.py")
+        conftest_score = self._score("tests/conftest.py")
+        assert regular_score > conftest_score
+
+    def test_important_names_score_higher(self):
+        """Architecturally important filenames should score higher."""
+        important_score = self._score("models.py")
+        regular_score = self._score("foo.py")
+        assert important_score > regular_score

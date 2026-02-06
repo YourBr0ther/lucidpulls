@@ -305,7 +305,9 @@ class TestDryRun:
         fix.pr_title = "Fix something"
         fix.pr_body = "Body"
         fix.file_path = "src/foo.py"
+        fix.bug_description = "Something is broken"
         fix.fix_description = "desc"
+        fix.confidence = "high"
         fix.related_issue = None
         analysis_result = Mock()
         analysis_result.found_fix = True
@@ -352,7 +354,9 @@ class TestDryRun:
         fix.pr_title = "Fix something"
         fix.pr_body = "Body"
         fix.file_path = "src/foo.py"
+        fix.bug_description = "Something is broken"
         fix.fix_description = "desc"
+        fix.confidence = "high"
         fix.related_issue = None
         analysis_result = Mock()
         analysis_result.found_fix = True

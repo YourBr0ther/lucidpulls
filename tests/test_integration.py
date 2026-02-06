@@ -181,6 +181,44 @@ class TestCodeAnalyzerIntegration:
         assert analyzer._validate_python_syntax(invalid_file) is False
 
 
+class TestFilePriorityIntegration:
+    """Integration test for priority-based file selection."""
+
+    def test_get_code_files_prioritizes_entry_points(self, tmp_path):
+        """Entry points should appear before filler files in results."""
+        # Create a repo with filler files and one entry point buried deep
+        (tmp_path / "aaa").mkdir()
+        for i in range(10):
+            (tmp_path / "aaa" / f"filler_{i}.py").write_text(f"x = {i}\n")
+
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "main.py").write_text("if __name__ == '__main__': run()\n")
+        (tmp_path / "src" / "app.py").write_text("app = create_app()\n")
+        (tmp_path / "src" / "models.py").write_text("class User: pass\n")
+
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_main.py").write_text("def test_it(): pass\n")
+
+        analyzer = CodeAnalyzer(Mock())
+        files = analyzer._get_code_files(tmp_path)
+        paths = [str(p) for p, _ in files]
+
+        # Entry points (main, app) and important files (models) should
+        # come before filler and test files
+        main_idx = next(i for i, p in enumerate(paths) if "main.py" in p and "test" not in p)
+        app_idx = next(i for i, p in enumerate(paths) if "app.py" in p)
+
+        # Filler files should be after entry points
+        filler_indices = [i for i, p in enumerate(paths) if "filler" in p]
+        assert all(main_idx < f for f in filler_indices)
+        assert all(app_idx < f for f in filler_indices)
+
+        # Test files should be after production source files
+        test_indices = [i for i, p in enumerate(paths) if "test_" in p]
+        if test_indices:
+            assert all(main_idx < t for t in test_indices)
+
+
 class TestDeadlineEnforcerIntegration:
     """Integration tests for deadline enforcement with real time."""
 

@@ -8,7 +8,7 @@ import httpx
 
 # Constants for HTTP LLM clients
 DEFAULT_TIMEOUT = 300.0  # 5 minute timeout for generation
-DEFAULT_MAX_TOKENS = 4096
+DEFAULT_MAX_TOKENS = 16384
 
 
 @dataclass

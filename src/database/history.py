@@ -296,6 +296,10 @@ class ReviewHistory:
                 for pr in prs
             ]
 
+            # Sum LLM tokens across all PR records for this run
+            token_values = [pr.llm_tokens_used for pr in prs if pr.llm_tokens_used]
+            total_tokens = sum(token_values) if token_values else None
+
             return ReviewReport(
                 date=run.started_at,
                 repos_reviewed=run.repos_reviewed,
@@ -303,6 +307,7 @@ class ReviewHistory:
                 prs=summaries,
                 start_time=run.started_at,
                 end_time=run.completed_at or datetime.now(timezone.utc),
+                llm_tokens_used=total_tokens,
             )
 
     def get_recent_runs(self, limit: int = 10) -> list[ReviewRun]:

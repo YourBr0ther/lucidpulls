@@ -68,7 +68,7 @@ class GitHubRateLimiter:
         """
         try:
             rate_limit = self.github.get_rate_limit()
-            core = rate_limit.core
+            core = rate_limit.rate
 
             if core.remaining < 10:
                 reset_time = core.reset.timestamp()

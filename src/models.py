@@ -38,6 +38,7 @@ class ReviewReport:
     prs: list[PRSummary]
     start_time: datetime
     end_time: datetime
+    llm_tokens_used: Optional[int] = None
 
     @property
     def duration_str(self) -> str:

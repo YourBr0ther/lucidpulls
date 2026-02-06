@@ -90,6 +90,8 @@ class DiscordNotifier(BaseNotifier):
         start_str = report.start_time.strftime("%H:%M")
         end_str = report.end_time.strftime("%H:%M")
         footer = f"Review window: {start_str} - {end_str} ({report.duration_str})"
+        if report.llm_tokens_used:
+            footer += f" | Tokens: {report.llm_tokens_used:,}"
 
         embed = {
             "title": f":sunrise: LucidPulls Morning Report - {date_str}",

@@ -16,7 +16,8 @@ from src.utils import parse_time_string
 logger = logging.getLogger("lucidpulls.scheduler")
 
 # Heartbeat file for health checks — written on start and after each job
-HEARTBEAT_PATH = Path(os.environ.get("HEARTBEAT_PATH", "/app/data/heartbeat"))
+_default_heartbeat = "/app/data/heartbeat" if Path("/app").is_dir() else "data/heartbeat"
+HEARTBEAT_PATH = Path(os.environ.get("HEARTBEAT_PATH", _default_heartbeat))
 
 
 def _write_heartbeat() -> None:

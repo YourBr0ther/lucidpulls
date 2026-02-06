@@ -73,7 +73,7 @@ class CodeAnalyzer(BaseAnalyzer):
         backoff=2.0,
         exceptions=(ValueError, ConnectionError, TimeoutError, OSError, httpx.TimeoutException),
     )
-    def _call_llm_with_retry(self, prompt: str, system_prompt: str) -> str:
+    def _call_llm_with_retry(self, prompt: str, system_prompt: str) -> "LLMResponse":
         """Call LLM with retry logic.
 
         Args:
@@ -81,7 +81,7 @@ class CodeAnalyzer(BaseAnalyzer):
             system_prompt: The system prompt to use.
 
         Returns:
-            LLM response content.
+            LLMResponse from the provider.
 
         Raises:
             ValueError: If LLM returns an unsuccessful response.
@@ -89,7 +89,7 @@ class CodeAnalyzer(BaseAnalyzer):
         response = self.llm.generate(prompt, system_prompt=system_prompt)
         if not response.success:
             raise ValueError("LLM returned empty response")
-        return response.content
+        return response
 
     def analyze(
         self,
@@ -137,10 +137,13 @@ class CodeAnalyzer(BaseAnalyzer):
 
             # Send to LLM with retry
             logger.info(f"Sending {len(files)} files to LLM for analysis")
+            tokens_used = None
             try:
-                response_content = self._call_llm_with_retry(
+                llm_response = self._call_llm_with_retry(
                     prompt, system_prompt=CODE_REVIEW_SYSTEM_PROMPT
                 )
+                response_content = llm_response.content
+                tokens_used = llm_response.tokens_used
             except (ValueError, httpx.TimeoutException) as e:
                 error_msg = "LLM request timed out" if isinstance(e, httpx.TimeoutException) else "LLM returned empty response after retries"
                 logger.error(f"LLM call failed after retries: {e}")
@@ -168,6 +171,7 @@ class CodeAnalyzer(BaseAnalyzer):
                 files_analyzed=len(files),
                 issues_reviewed=len(issues) if issues else 0,
                 analysis_time_seconds=analysis_time,
+                llm_tokens_used=tokens_used,
             )
 
         except Exception as e:
@@ -228,7 +232,16 @@ class CodeAnalyzer(BaseAnalyzer):
                 logger.warning("Could not extract JSON from LLM response")
                 return None
 
-            data = json.loads(json_str)
+            logger.debug(f"Extracted JSON: {len(json_str)} chars")
+
+            try:
+                data = json.loads(json_str)
+            except json.JSONDecodeError:
+                # LLMs often produce unescaped newlines inside JSON string values;
+                # escape bare newlines that appear inside strings and retry.
+                cleaned = self._fix_json_newlines(json_str)
+                logger.debug(f"Retrying JSON parse after newline fix, first 200 chars: {cleaned[:200]!r}")
+                data = json.loads(cleaned)
             fix_response = LLMFixResponse.model_validate(data)
 
             if not fix_response.found_bug:
@@ -271,7 +284,14 @@ class CodeAnalyzer(BaseAnalyzer):
             return None
 
     def _extract_json(self, text: str) -> Optional[str]:
-        """Extract JSON object from text.
+        """Extract JSON object from text using string-aware brace matching.
+
+        LLM responses may contain markdown code fences (```json ... ```) around
+        the JSON, and the JSON itself may contain ``` sequences inside string
+        values (e.g. in pr_body with embedded code blocks). Naive fence
+        detection breaks on these, so we always use brace matching that tracks
+        whether we're inside a JSON string to avoid being confused by braces
+        or other syntax inside string values.
 
         Args:
             text: Text potentially containing JSON.
@@ -279,37 +299,64 @@ class CodeAnalyzer(BaseAnalyzer):
         Returns:
             JSON string if found, None otherwise.
         """
-        # Try to find JSON block in markdown code fence
-        if "```json" in text:
-            start = text.find("```json") + 7
-            end = text.find("```", start)
-            if end > start:
-                return text[start:end].strip()
-
-        if "```" in text:
-            start = text.find("```") + 3
-            end = text.find("```", start)
-            if end > start:
-                content = text[start:end].strip()
-                if content.startswith("{"):
-                    return content
-
-        # Try to find raw JSON
+        # Find the first '{' to start brace matching
         start = text.find("{")
         if start == -1:
             return None
 
-        # Find matching closing brace
+        # String-aware brace matching: track depth while skipping string contents
         depth = 0
-        for i, char in enumerate(text[start:], start):
-            if char == "{":
-                depth += 1
-            elif char == "}":
-                depth -= 1
-                if depth == 0:
-                    return text[start:i + 1]
+        in_string = False
+        i = start
+        while i < len(text):
+            ch = text[i]
+
+            if in_string:
+                if ch == "\\" and i + 1 < len(text):
+                    i += 2  # Skip escaped character
+                    continue
+                elif ch == '"':
+                    in_string = False
+            else:
+                if ch == '"':
+                    in_string = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return text[start:i + 1]
+
+            i += 1
 
         return None
+
+    @staticmethod
+    def _fix_json_newlines(text: str) -> str:
+        """Escape bare newlines inside JSON string values.
+
+        LLMs often emit literal newlines inside JSON strings instead of \\n.
+        This walks the text character-by-character and escapes newlines that
+        appear between unescaped double-quotes.
+        """
+        result: list[str] = []
+        in_string = False
+        i = 0
+        while i < len(text):
+            ch = text[i]
+            if ch == '"' and (i == 0 or text[i - 1] != "\\"):
+                in_string = not in_string
+                result.append(ch)
+            elif ch == "\n" and in_string:
+                result.append("\\n")
+            elif ch == "\r" and in_string:
+                result.append("\\r")
+            elif ch == "\t" and in_string:
+                result.append("\\t")
+            else:
+                result.append(ch)
+            i += 1
+        return "".join(result)
 
     def apply_fix(self, repo_path: Path, fix: FixSuggestion) -> bool:
         """Apply a fix to the repository.
@@ -458,11 +505,23 @@ class CodeAnalyzer(BaseAnalyzer):
         try:
             result = subprocess.run(
                 ["npx", "--yes", "typescript", "tsc", "--noEmit", "--allowJs",
-                 "--esModuleInterop", "--jsx", "react-jsx", str(file_path)],
+                 "--esModuleInterop", "--jsx", "react-jsx",
+                 "--isolatedModules", "--noResolve",
+                 "--moduleResolution", "bundler",
+                 str(file_path)],
                 capture_output=True,
                 timeout=30,
+                text=True,
             )
-            return result.returncode == 0
+            if result.returncode == 0:
+                return True
+            # Only reject on syntax errors (TS1xxx); ignore type errors
+            # from missing imports/config which are expected on standalone files.
+            stderr = result.stdout + result.stderr
+            if "error TS1" in stderr:
+                logger.debug(f"TS syntax error found in {file_path}")
+                return False
+            return True
         except FileNotFoundError:
             # npx/tsc not available — skip validation rather than reject valid TS
             logger.debug("TypeScript compiler not available, skipping TS syntax validation")

@@ -121,9 +121,6 @@ class LucidPulls:
             prs_created = 0
             repos_reviewed = 0
 
-            # Capture context for thread propagation
-            ctx = contextvars.copy_context()
-
             with ThreadPoolExecutor(max_workers=self.settings.max_workers) as executor:
                 futures = {}
                 for repo_name in repos:
@@ -133,6 +130,8 @@ class LucidPulls:
                     if self.deadline.is_past_deadline():
                         logger.warning("Deadline reached, not submitting more repos")
                         break
+                    # Each thread needs its own context copy for run_id propagation
+                    ctx = contextvars.copy_context()
                     future = executor.submit(ctx.run, self._process_repo, repo_name, run_id)
                     futures[future] = repo_name
 
@@ -151,6 +150,10 @@ class LucidPulls:
             if not self.history.complete_run(run_id, repos_reviewed, prs_created):
                 logger.warning(f"Failed to record completion of run #{run_id}")
             logger.info(f"Review complete: {repos_reviewed} repos, {prs_created} PRs")
+
+            # Alert if ALL repos failed (no PRs created and at least one was attempted)
+            if repos_reviewed > 0 and prs_created == 0:
+                self._send_failure_alert(repos_reviewed)
         finally:
             current_run_id.reset(run_id_token)
 
@@ -267,6 +270,7 @@ class LucidPulls:
                 success=False,
                 error="No actionable fixes identified",
                 analysis_time=result.analysis_time_seconds,
+                llm_tokens_used=result.llm_tokens_used,
             )
             return False
 
@@ -284,6 +288,7 @@ class LucidPulls:
                 success=False,
                 error="Failed to create branch",
                 analysis_time=result.analysis_time_seconds,
+                llm_tokens_used=result.llm_tokens_used,
             )
             return False
 
@@ -296,6 +301,7 @@ class LucidPulls:
                 success=False,
                 error="Failed to apply fix",
                 analysis_time=result.analysis_time_seconds,
+                llm_tokens_used=result.llm_tokens_used,
             )
             return False
 
@@ -309,6 +315,7 @@ class LucidPulls:
                 success=False,
                 error="Failed to commit changes",
                 analysis_time=result.analysis_time_seconds,
+                llm_tokens_used=result.llm_tokens_used,
             )
             return False
 
@@ -323,6 +330,7 @@ class LucidPulls:
                 success=True,
                 error="dry_run",
                 analysis_time=result.analysis_time_seconds,
+                llm_tokens_used=result.llm_tokens_used,
             )
             return True
 
@@ -335,8 +343,12 @@ class LucidPulls:
                 success=False,
                 error="Failed to push branch",
                 analysis_time=result.analysis_time_seconds,
+                llm_tokens_used=result.llm_tokens_used,
             )
             return False
+
+        # Build structured PR body
+        pr_body = self._build_pr_body(fix)
 
         # Create PR
         try:
@@ -345,7 +357,7 @@ class LucidPulls:
                 branch_name=branch_name,
                 base_branch=repo_info.default_branch,
                 title=fix.pr_title,
-                body=fix.pr_body,
+                body=pr_body,
                 related_issue=fix.related_issue,
             )
         except RateLimitExhausted:
@@ -356,6 +368,7 @@ class LucidPulls:
                 success=False,
                 error="Rate limit exhausted during PR creation",
                 analysis_time=result.analysis_time_seconds,
+                llm_tokens_used=result.llm_tokens_used,
             )
             return False
 
@@ -368,6 +381,7 @@ class LucidPulls:
                 success=False,
                 error=pr_result.error or "Failed to create PR",
                 analysis_time=result.analysis_time_seconds,
+                llm_tokens_used=result.llm_tokens_used,
             )
             return False
 
@@ -384,6 +398,43 @@ class LucidPulls:
 
         logger.info(f"Created PR #{pr_result.pr_number}: {pr_result.pr_url}")
         return True
+
+    @staticmethod
+    def _build_pr_body(fix: object) -> str:
+        """Build a structured PR body from a FixSuggestion.
+
+        Args:
+            fix: FixSuggestion with bug/fix details.
+
+        Returns:
+            Formatted PR body string.
+        """
+        sections = [
+            "## Summary",
+            fix.pr_body,
+            "",
+            "## Bug",
+            fix.bug_description,
+            "",
+            "## Fix",
+            fix.fix_description,
+            "",
+            f"**File:** `{fix.file_path}`",
+            f"**Confidence:** {fix.confidence}",
+        ]
+
+        if fix.related_issue:
+            sections.append(f"**Related issue:** #{fix.related_issue}")
+
+        sections.extend([
+            "",
+            "## Review Checklist",
+            "- [ ] The fix addresses the described bug",
+            "- [ ] No unintended side effects",
+            "- [ ] Tests pass (if applicable)",
+        ])
+
+        return "\n".join(sections)
 
     def test_notifications(self) -> None:
         """Send a test notification to verify delivery is working."""
@@ -476,6 +527,33 @@ class LucidPulls:
                 logger.error(
                     f"Failed to send report after {max_attempts} attempts: {result.error}"
                 )
+
+    def _send_failure_alert(self, repos_reviewed: int) -> None:
+        """Send a warning notification when all repos in a run failed.
+
+        Args:
+            repos_reviewed: Number of repos that were reviewed.
+        """
+        if not self.notifier.is_configured():
+            return
+
+        logger.warning(f"All {repos_reviewed} repos failed — sending failure alert")
+
+        tz = pytz.timezone(self.settings.timezone)
+        now = datetime.now(tz)
+        alert_report = ReviewReport(
+            date=now,
+            repos_reviewed=repos_reviewed,
+            prs_created=0,
+            prs=[],
+            start_time=now,
+            end_time=now,
+        )
+
+        try:
+            self.notifier.send_report(alert_report)
+        except Exception as e:
+            logger.error(f"Failed to send failure alert: {e}")
 
     def start(self) -> None:
         """Start the LucidPulls service."""

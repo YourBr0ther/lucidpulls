@@ -202,26 +202,34 @@ class PRCreator:
 
             # Get issues with optional label filter
             if labels:
-                issues = repo.get_issues(state="open", labels=labels)
-            else:
-                # Get bugs and enhancements by default
+                issues = list(repo.get_issues(state="open", labels=labels)[:limit])
+                return [self._issue_to_dict(i) for i in issues]
+
+            # Get bugs and enhancements by default
+            bug_issues: list = []
+            enhancement_issues: list = []
+            try:
                 bug_issues = list(repo.get_issues(state="open", labels=["bug"])[:limit])
+            except (GithubException, IndexError):
+                pass
+            try:
                 enhancement_issues = list(
                     repo.get_issues(state="open", labels=["enhancement"])[:limit]
                 )
-                all_issues = bug_issues + enhancement_issues
-                # Dedupe and limit
-                seen: set[int] = set()
-                issues = []
-                for issue in all_issues:
-                    if issue.number not in seen:
-                        seen.add(issue.number)
-                        issues.append(issue)
-                    if len(issues) >= limit:
-                        break
-                return [self._issue_to_dict(i) for i in issues]
+            except (GithubException, IndexError):
+                pass
 
-            return [self._issue_to_dict(i) for i in list(issues)[:limit]]
+            all_issues = bug_issues + enhancement_issues
+            # Dedupe and limit
+            seen: set[int] = set()
+            issues = []
+            for issue in all_issues:
+                if issue.number not in seen:
+                    seen.add(issue.number)
+                    issues.append(issue)
+                if len(issues) >= limit:
+                    break
+            return [self._issue_to_dict(i) for i in issues]
         except GithubException as e:
             logger.error(f"Failed to get issues for {repo_full_name}: {e}")
             return []

@@ -117,7 +117,10 @@ class TeamsNotifier(BaseNotifier):
                             },
                             {
                                 "type": "TextBlock",
-                                "text": f"Review window: {start_str} - {end_str} ({report.duration_str})",
+                                "text": (
+                                    f"Review window: {start_str} - {end_str} ({report.duration_str})"
+                                    + (f" | Tokens: {report.llm_tokens_used:,}" if report.llm_tokens_used else "")
+                                ),
                                 "size": "Small",
                                 "isSubtle": True,
                             },
