@@ -43,8 +43,8 @@ class TestDatabaseIndexes:
 
             history.close()
 
-    def test_migration_version_at_0003(self):
-        """Verify DB is at migration revision 0003."""
+    def test_migration_version_at_0004(self):
+        """Verify DB is at migration revision 0004."""
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = f"{tmpdir}/test.db"
             history = ReviewHistory(db_path=db_path)
@@ -52,7 +52,7 @@ class TestDatabaseIndexes:
             with history.engine.connect() as conn:
                 result = conn.execute(text("SELECT version_num FROM alembic_version"))
                 version = result.scalar()
-                assert version == "0003"
+                assert version == "0004"
 
             history.close()
 

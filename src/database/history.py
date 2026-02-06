@@ -10,7 +10,7 @@ from typing import Optional
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, Session, joinedload
 
-from src.database.models import Base, ReviewRun, PRRecord
+from src.database.models import Base, ReviewRun, PRRecord, RejectedFix
 from src.models import PRSummary, ReviewReport
 
 logger = logging.getLogger("lucidpulls.database.history")
@@ -331,6 +331,68 @@ class ReviewHistory:
                 .limit(limit)
                 .all()
             )
+
+    def is_fix_rejected(self, repo_name: str, file_path: str, fix_hash: str) -> bool:
+        """Check if a fix has been previously rejected.
+
+        Args:
+            repo_name: Full repository name (owner/repo).
+            file_path: Path to the file within the repo.
+            fix_hash: SHA-256 hash of original_code + fixed_code.
+
+        Returns:
+            True if this fix was previously rejected.
+        """
+        try:
+            with self.SessionLocal() as session:
+                match = (
+                    session.query(RejectedFix)
+                    .filter(
+                        RejectedFix.repo_name == repo_name,
+                        RejectedFix.file_path == file_path,
+                        RejectedFix.fix_hash == fix_hash,
+                    )
+                    .first()
+                )
+                return match is not None
+        except Exception as e:
+            logger.error(f"Failed to check rejected fixes: {e}")
+            return False
+
+    def record_rejected_fix(
+        self,
+        repo_name: str,
+        file_path: str,
+        fix_hash: str,
+        reason: Optional[str] = None,
+    ) -> bool:
+        """Record a fix as rejected so it won't be re-suggested.
+
+        Args:
+            repo_name: Full repository name (owner/repo).
+            file_path: Path to the file within the repo.
+            fix_hash: SHA-256 hash of original_code + fixed_code.
+            reason: Optional reason for rejection.
+
+        Returns:
+            True if the database write succeeded.
+        """
+        try:
+            with self.SessionLocal() as session:
+                record = RejectedFix(
+                    repo_name=repo_name,
+                    file_path=file_path,
+                    fix_hash=fix_hash,
+                    reason=reason,
+                    created_at=datetime.now(timezone.utc),
+                )
+                session.add(record)
+                session.commit()
+                logger.debug(f"Recorded rejected fix for {repo_name}:{file_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to record rejected fix: {e}")
+            return False
 
     def close(self) -> None:
         """Close the database engine and release connections."""

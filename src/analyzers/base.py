@@ -90,6 +90,24 @@ class AnalysisResult:
         return self.error is None
 
 
+@dataclass
+class TestResult:
+    """Result of running a repository's test suite."""
+
+    status: str  # passed, failed, timeout, skipped
+    detail: Optional[str] = None
+
+    @property
+    def passed(self) -> bool:
+        """Check if tests passed."""
+        return self.status == "passed"
+
+    @property
+    def ran(self) -> bool:
+        """Check if tests actually executed (not skipped)."""
+        return self.status in ("passed", "failed", "timeout")
+
+
 class BaseAnalyzer(ABC):
     """Abstract base class for code analyzers."""
 

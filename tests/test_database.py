@@ -281,11 +281,11 @@ class TestAlembicMigrations:
             tables = inspector.get_table_names()
             assert "alembic_version" in tables
 
-            # Verify stamp is at head (0003 after bug_description migration)
+            # Verify stamp is at head (0004 after bug_description migration)
             with history.engine.connect() as conn:
                 result = conn.execute(text("SELECT version_num FROM alembic_version"))
                 version = result.scalar()
-                assert version == "0003"
+                assert version == "0004"
             history.close()
 
     def test_migration_idempotent(self):
@@ -301,3 +301,47 @@ class TestAlembicMigrations:
             run_id = history2.start_run()
             assert run_id is not None
             history2.close()
+
+
+class TestRejectedFixes:
+    """Tests for rejected fix memory."""
+
+    def test_record_and_check_rejected_fix(self):
+        """Test recording a rejected fix and querying it."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = f"{tmpdir}/test.db"
+            history = ReviewHistory(db_path=db_path)
+
+            fix_hash = "abc123def456"
+            assert history.is_fix_rejected("owner/repo", "src/foo.py", fix_hash) is False
+
+            result = history.record_rejected_fix(
+                "owner/repo", "src/foo.py", fix_hash, reason="apply_fix failed"
+            )
+            assert result is True
+
+            assert history.is_fix_rejected("owner/repo", "src/foo.py", fix_hash) is True
+            history.close()
+
+    def test_rejected_fix_different_repo_not_matched(self):
+        """Test that rejected fix for one repo doesn't match another."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = f"{tmpdir}/test.db"
+            history = ReviewHistory(db_path=db_path)
+
+            fix_hash = "abc123def456"
+            history.record_rejected_fix("owner/repo1", "src/foo.py", fix_hash)
+
+            assert history.is_fix_rejected("owner/repo2", "src/foo.py", fix_hash) is False
+            history.close()
+
+    def test_rejected_fix_different_hash_not_matched(self):
+        """Test that different fix hash is not matched."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = f"{tmpdir}/test.db"
+            history = ReviewHistory(db_path=db_path)
+
+            history.record_rejected_fix("owner/repo", "src/foo.py", "hash1")
+
+            assert history.is_fix_rejected("owner/repo", "src/foo.py", "hash2") is False
+            history.close()

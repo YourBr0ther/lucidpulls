@@ -12,7 +12,7 @@ from typing import Literal, Optional
 import httpx
 from pydantic import BaseModel, field_validator
 
-from src.analyzers.base import BaseAnalyzer, AnalysisResult, FixSuggestion
+from src.analyzers.base import BaseAnalyzer, AnalysisResult, FixSuggestion, TestResult
 from src.llm.base import BaseLLM, CODE_REVIEW_SYSTEM_PROMPT, FIX_GENERATION_PROMPT_TEMPLATE
 from src.models import GithubIssue
 from src.utils import retry
@@ -403,6 +403,23 @@ class CodeAnalyzer(BaseAnalyzer):
                 )
                 return False
 
+            # Reject oversized fixes — prevents LLM from rewriting entire functions
+            max_fix_lines = 200
+            max_growth_factor = 3.0
+            orig_lines = fix.original_code.count("\n") + 1
+            fixed_lines = fix.fixed_code.count("\n") + 1
+            if fixed_lines > max_fix_lines:
+                logger.error(
+                    f"Fix too large ({fixed_lines} lines, max {max_fix_lines})"
+                )
+                return False
+            if orig_lines > 0 and fixed_lines / orig_lines > max_growth_factor:
+                logger.error(
+                    f"Fix grows code too much ({orig_lines} → {fixed_lines} lines, "
+                    f"max {max_growth_factor}x)"
+                )
+                return False
+
             # Apply the fix (single exact match)
             new_content = content.replace(fix.original_code, fix.fixed_code, 1)
 
@@ -449,6 +466,12 @@ class CodeAnalyzer(BaseAnalyzer):
             return self._validate_js_syntax(file_path)
         elif suffix in (".ts", ".tsx"):
             return self._validate_ts_syntax(file_path)
+        elif suffix == ".go":
+            return self._validate_go_syntax(file_path)
+        elif suffix == ".java":
+            return self._validate_java_syntax(file_path)
+        elif suffix == ".rs":
+            return self._validate_rust_syntax(file_path)
 
         # For other languages, assume valid
         return True
@@ -541,3 +564,190 @@ class CodeAnalyzer(BaseAnalyzer):
         except Exception as e:
             logger.debug(f"TS syntax validation error (skipping): {e}")
             return True
+
+    def _validate_go_syntax(self, file_path: Path) -> bool:
+        """Validate Go syntax using go vet.
+
+        Args:
+            file_path: Path to the Go file.
+
+        Returns:
+            True if syntax is valid, or if Go is not installed (fail-open).
+        """
+        try:
+            result = subprocess.run(
+                ["go", "vet", str(file_path)],
+                capture_output=True,
+                timeout=10,
+            )
+            return result.returncode == 0
+        except FileNotFoundError:
+            logger.debug("Go not available, skipping Go syntax validation")
+            return True
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Go syntax validation timed out for {file_path}")
+            return True
+        except Exception as e:
+            logger.debug(f"Go syntax validation error (skipping): {e}")
+            return True
+
+    def _validate_java_syntax(self, file_path: Path) -> bool:
+        """Validate Java syntax using javac (compile-only, no output).
+
+        Args:
+            file_path: Path to the Java file.
+
+        Returns:
+            True if syntax is valid, or if javac is not installed (fail-open).
+        """
+        try:
+            result = subprocess.run(
+                ["javac", "-d", "/dev/null", "-proc:none", str(file_path)],
+                capture_output=True,
+                timeout=15,
+            )
+            # javac returns 0 on success; non-zero includes both syntax and
+            # type errors.  Only reject on clear syntax issues (same approach
+            # as TS: accept import/type errors since we compile a single file).
+            if result.returncode == 0:
+                return True
+            stderr = (result.stdout + result.stderr).decode(errors="replace")
+            # "error:" with no "cannot find symbol" → likely syntax error
+            if "error:" in stderr and "cannot find symbol" not in stderr:
+                logger.debug(f"Java syntax error found in {file_path}")
+                return False
+            return True
+        except FileNotFoundError:
+            logger.debug("javac not available, skipping Java syntax validation")
+            return True
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Java syntax validation timed out for {file_path}")
+            return True
+        except Exception as e:
+            logger.debug(f"Java syntax validation error (skipping): {e}")
+            return True
+
+    def _validate_rust_syntax(self, file_path: Path) -> bool:
+        """Validate Rust syntax using rustc (parse-only via --edition flag).
+
+        Args:
+            file_path: Path to the Rust file.
+
+        Returns:
+            True if syntax is valid, or if rustc is not installed (fail-open).
+        """
+        try:
+            # Use cargo check if Cargo.toml exists (better for real projects)
+            cargo_toml = file_path.parent
+            while cargo_toml != cargo_toml.parent:
+                if (cargo_toml / "Cargo.toml").exists():
+                    break
+                cargo_toml = cargo_toml.parent
+
+            if (cargo_toml / "Cargo.toml").exists():
+                result = subprocess.run(
+                    ["cargo", "check", "--message-format=short"],
+                    cwd=str(cargo_toml),
+                    capture_output=True,
+                    timeout=30,
+                )
+            else:
+                result = subprocess.run(
+                    ["rustc", "--edition", "2021", "--crate-type", "lib",
+                     "-o", "/dev/null", str(file_path)],
+                    capture_output=True,
+                    timeout=15,
+                )
+            if result.returncode == 0:
+                return True
+            stderr = (result.stdout + result.stderr).decode(errors="replace")
+            # Only reject on syntax-level errors; allow unresolved import errors
+            if "error[E" in stderr and "cannot find" not in stderr:
+                logger.debug(f"Rust syntax error found in {file_path}")
+                return False
+            return True
+        except FileNotFoundError:
+            logger.debug("Rust toolchain not available, skipping Rust syntax validation")
+            return True
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Rust syntax validation timed out for {file_path}")
+            return True
+        except Exception as e:
+            logger.debug(f"Rust syntax validation error (skipping): {e}")
+            return True
+
+    def run_repo_tests(self, repo_path: Path, timeout: int = 120) -> "TestResult":
+        """Detect and run a repo's test suite.
+
+        Looks for common test markers (pytest, package.json, go.mod) and
+        runs the appropriate test command.  Returns a TestResult indicating
+        whether tests passed, failed, or could not be run.
+
+        Args:
+            repo_path: Root path of the cloned repository.
+            timeout: Maximum seconds to allow tests to run.
+
+        Returns:
+            TestResult with status and details.
+        """
+        cmd = self._detect_test_command(repo_path)
+        if cmd is None:
+            return TestResult(status="skipped", detail="No test runner detected")
+
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=str(repo_path),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            if result.returncode == 0:
+                return TestResult(status="passed")
+            # Capture last few lines of output for diagnostics
+            output = (result.stdout + result.stderr).strip()
+            tail = "\n".join(output.splitlines()[-10:]) if output else ""
+            return TestResult(status="failed", detail=tail)
+        except subprocess.TimeoutExpired:
+            return TestResult(status="timeout", detail=f"Tests exceeded {timeout}s limit")
+        except FileNotFoundError as e:
+            return TestResult(status="skipped", detail=f"Test runner not installed: {e}")
+        except Exception as e:
+            return TestResult(status="skipped", detail=f"Error running tests: {e}")
+
+    @staticmethod
+    def _detect_test_command(repo_path: Path) -> Optional[list[str]]:
+        """Detect the appropriate test command for a repository.
+
+        Args:
+            repo_path: Root path of the repository.
+
+        Returns:
+            Command list to execute, or None if no test runner detected.
+        """
+        # Python: look for pytest markers
+        if any(
+            (repo_path / f).exists()
+            for f in ("pytest.ini", "pyproject.toml", "setup.py", "setup.cfg")
+        ):
+            tests_dir = repo_path / "tests"
+            test_dir = repo_path / "test"
+            if tests_dir.is_dir() or test_dir.is_dir():
+                return ["python3", "-m", "pytest", "-x", "-q", "--tb=short", "--no-header"]
+
+        # JavaScript / TypeScript: look for package.json with test script
+        pkg_json = repo_path / "package.json"
+        if pkg_json.exists():
+            try:
+                import json
+                pkg = json.loads(pkg_json.read_text(encoding="utf-8"))
+                if "test" in pkg.get("scripts", {}):
+                    return ["npm", "test", "--", "--passWithNoTests"]
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        # Go: look for go.mod
+        if (repo_path / "go.mod").exists():
+            return ["go", "test", "-short", "-count=1", "./..."]
+
+        return None

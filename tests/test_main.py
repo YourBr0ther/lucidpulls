@@ -31,6 +31,8 @@ def _make_settings(**overrides):
     settings.timezone = "America/New_York"
     settings.log_level = "INFO"
     settings.log_format = "text"
+    settings.run_tests = False
+    settings.test_timeout = 120
     settings.get_llm_config.return_value = {"host": "http://localhost:11434", "model": "codellama"}
     settings.get_notification_config.return_value = {"webhook_url": ""}
     for key, value in overrides.items():
@@ -353,6 +355,7 @@ class TestDryRun:
         """Test that dry_run skips push and PR creation after commit."""
         settings = _make_settings(dry_run=True)
         agent = LucidPulls(settings)
+        mock_history.return_value.is_fix_rejected.return_value = False
 
         # Mock the full _analyze_and_fix path up to commit success
         repo_info = Mock()
@@ -371,6 +374,8 @@ class TestDryRun:
         fix.fix_description = "desc"
         fix.confidence = "high"
         fix.related_issue = None
+        fix.original_code = "x = 1"
+        fix.fixed_code = "x = 2"
         analysis_result = Mock()
         analysis_result.found_fix = True
         analysis_result.fix = fix
@@ -407,6 +412,7 @@ class TestDryRun:
         """Test that without dry_run, push and PR happen normally."""
         settings = _make_settings(dry_run=False)
         agent = LucidPulls(settings)
+        mock_history.return_value.is_fix_rejected.return_value = False
 
         repo_info = Mock()
         repo_info.local_path = Path("/tmp/test")
@@ -423,6 +429,8 @@ class TestDryRun:
         fix.fix_description = "desc"
         fix.confidence = "high"
         fix.related_issue = None
+        fix.original_code = "x = 1"
+        fix.fixed_code = "x = 2"
         analysis_result = Mock()
         analysis_result.found_fix = True
         analysis_result.fix = fix
@@ -444,6 +452,68 @@ class TestDryRun:
         record_call = mock_history.return_value.record_pr.call_args
         assert record_call[1]["bug_description"] == "Something is broken"
         assert record_call[1]["llm_tokens_used"] == 750
+
+
+class TestPRBody:
+    """Tests for PR body building."""
+
+    def test_build_pr_body_includes_code_diff(self):
+        """PR body should include a code changes section with diff."""
+        fix = Mock()
+        fix.pr_body = "Summary"
+        fix.bug_description = "Bug"
+        fix.fix_description = "Fix"
+        fix.file_path = "src/foo.py"
+        fix.confidence = "high"
+        fix.related_issue = None
+        fix.original_code = "x = 1"
+        fix.fixed_code = "x = 2"
+
+        body = LucidPulls._build_pr_body(fix)
+        assert "## Code Changes" in body
+        assert "```diff" in body
+
+    def test_build_pr_body_truncates_long_diff(self):
+        """Long diffs should be truncated with a message."""
+        fix = Mock()
+        fix.pr_body = "Summary"
+        fix.bug_description = "Bug"
+        fix.fix_description = "Fix"
+        fix.file_path = "src/foo.py"
+        fix.confidence = "high"
+        fix.related_issue = None
+        fix.original_code = "\n".join(f"line{i}" for i in range(100))
+        fix.fixed_code = "\n".join(f"changed{i}" for i in range(100))
+
+        body = LucidPulls._build_pr_body(fix)
+        assert "more lines, see Files Changed" in body
+
+
+class TestFixHash:
+    """Tests for fix hash computation."""
+
+    def test_same_fix_produces_same_hash(self):
+        """Identical fixes should produce identical hashes."""
+        fix = Mock()
+        fix.original_code = "x = 1"
+        fix.fixed_code = "x = 2"
+
+        hash1 = LucidPulls._compute_fix_hash(fix)
+        hash2 = LucidPulls._compute_fix_hash(fix)
+        assert hash1 == hash2
+        assert len(hash1) == 64  # SHA-256 hex digest
+
+    def test_different_fix_produces_different_hash(self):
+        """Different fixes should produce different hashes."""
+        fix1 = Mock()
+        fix1.original_code = "x = 1"
+        fix1.fixed_code = "x = 2"
+
+        fix2 = Mock()
+        fix2.original_code = "x = 1"
+        fix2.fixed_code = "x = 3"
+
+        assert LucidPulls._compute_fix_hash(fix1) != LucidPulls._compute_fix_hash(fix2)
 
 
 class TestHealthCheck:

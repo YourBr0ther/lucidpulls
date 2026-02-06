@@ -144,6 +144,16 @@ class Settings(BaseSettings):
         default=False,
         description="Log what would happen without pushing branches or creating PRs",
     )
+    run_tests: bool = Field(
+        default=True,
+        description="Run repo tests after applying a fix to catch regressions",
+    )
+    test_timeout: int = Field(
+        default=120,
+        description="Timeout in seconds for running repo tests",
+        ge=10,
+        le=600,
+    )
 
     # Database backups
     db_backup_enabled: bool = Field(

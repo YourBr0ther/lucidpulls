@@ -520,3 +520,119 @@ class TestFileScoring:
         important_score = self._score("models.py")
         regular_score = self._score("foo.py")
         assert important_score > regular_score
+
+
+class TestDiffSizeLimit:
+    """Tests for fix size guardrails in apply_fix."""
+
+    def _make_analyzer(self):
+        return CodeAnalyzer(Mock())
+
+    def test_rejects_fix_over_200_lines(self):
+        """Fix with >200 lines of new code should be rejected."""
+        analyzer = self._make_analyzer()
+        fix = FixSuggestion(
+            file_path="test.py",
+            bug_description="bug",
+            fix_description="fix",
+            original_code="x = 1",
+            fixed_code="\n".join(f"line{i}" for i in range(201)),
+            pr_title="title",
+            pr_body="body",
+            confidence="high",
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_file = Path(tmpdir) / "test.py"
+            test_file.write_text("x = 1\n")
+            result = analyzer.apply_fix(Path(tmpdir), fix)
+            assert result is False
+
+    def test_rejects_fix_with_excessive_growth(self):
+        """Fix that grows code >3x should be rejected."""
+        analyzer = self._make_analyzer()
+        original = "x = 1"
+        # 4 lines → 4x growth from 1 line original
+        fixed = "x = 1\ny = 2\nz = 3\nw = 4"
+        fix = FixSuggestion(
+            file_path="test.py",
+            bug_description="bug",
+            fix_description="fix",
+            original_code=original,
+            fixed_code=fixed,
+            pr_title="title",
+            pr_body="body",
+            confidence="high",
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_file = Path(tmpdir) / "test.py"
+            test_file.write_text("x = 1\n")
+            result = analyzer.apply_fix(Path(tmpdir), fix)
+            assert result is False
+
+    def test_allows_reasonable_fix(self):
+        """Fix within limits should be allowed."""
+        analyzer = self._make_analyzer()
+        fix = FixSuggestion(
+            file_path="test.py",
+            bug_description="bug",
+            fix_description="fix",
+            original_code="x = 1",
+            fixed_code="x = 2",
+            pr_title="title",
+            pr_body="body",
+            confidence="high",
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_file = Path(tmpdir) / "test.py"
+            test_file.write_text("x = 1\n")
+            result = analyzer.apply_fix(Path(tmpdir), fix)
+            assert result is True
+
+
+class TestDetectTestCommand:
+    """Tests for test runner detection."""
+
+    def test_detects_python_pytest(self):
+        """Should detect pytest in a Python project."""
+        analyzer = CodeAnalyzer(Mock())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            (Path(tmpdir) / "pyproject.toml").write_text("[tool.pytest]")
+            (Path(tmpdir) / "tests").mkdir()
+            cmd = analyzer._detect_test_command(Path(tmpdir))
+            assert cmd is not None
+            assert "pytest" in cmd
+
+    def test_detects_npm_test(self):
+        """Should detect npm test in a JS project."""
+        import json
+        analyzer = CodeAnalyzer(Mock())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pkg = {"scripts": {"test": "jest"}}
+            (Path(tmpdir) / "package.json").write_text(json.dumps(pkg))
+            cmd = analyzer._detect_test_command(Path(tmpdir))
+            assert cmd is not None
+            assert "npm" in cmd
+
+    def test_detects_go_test(self):
+        """Should detect go test in a Go project."""
+        analyzer = CodeAnalyzer(Mock())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            (Path(tmpdir) / "go.mod").write_text("module example.com/test")
+            cmd = analyzer._detect_test_command(Path(tmpdir))
+            assert cmd is not None
+            assert "go" in cmd
+
+    def test_returns_none_for_unknown(self):
+        """Should return None for unknown project types."""
+        analyzer = CodeAnalyzer(Mock())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cmd = analyzer._detect_test_command(Path(tmpdir))
+            assert cmd is None
+
+    def test_skips_python_without_tests_dir(self):
+        """Should not detect pytest if no tests/ directory exists."""
+        analyzer = CodeAnalyzer(Mock())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            (Path(tmpdir) / "pyproject.toml").write_text("[tool.pytest]")
+            cmd = analyzer._detect_test_command(Path(tmpdir))
+            assert cmd is None

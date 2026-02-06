@@ -275,6 +275,20 @@ class LucidPulls:
         fix = result.fix
         logger.info(f"Found fix: {fix.pr_title}")
 
+        # Check if this fix was previously rejected
+        fix_hash = self._compute_fix_hash(fix)
+        if self.history.is_fix_rejected(repo_name, fix.file_path, fix_hash):
+            logger.info(f"Skipping previously rejected fix for {repo_name}:{fix.file_path}")
+            self.history.record_pr(
+                run_id,
+                repo_name=repo_name,
+                success=False,
+                error="Fix previously rejected",
+                analysis_time=result.analysis_time_seconds,
+                llm_tokens_used=result.llm_tokens_used,
+            )
+            return False
+
         # Create branch with sanitized file path
         safe_file = sanitize_branch_name(fix.file_path)
         tz = pytz.timezone(self.settings.timezone)
@@ -293,6 +307,10 @@ class LucidPulls:
         # Apply fix
         if not self.code_analyzer.apply_fix(repo_info.local_path, fix):
             self.repo_manager.cleanup_branch(repo_info, branch_name)
+            # Record as rejected so we don't re-suggest the same broken fix
+            self.history.record_rejected_fix(
+                repo_name, fix.file_path, fix_hash, reason="apply_fix failed"
+            )
             self.history.record_pr(
                 run_id,
                 repo_name=repo_name,
@@ -302,6 +320,34 @@ class LucidPulls:
                 llm_tokens_used=result.llm_tokens_used,
             )
             return False
+
+        # Run repo tests to catch regressions (configurable)
+        if self.settings.run_tests:
+            test_result = self.code_analyzer.run_repo_tests(
+                repo_info.local_path, timeout=self.settings.test_timeout
+            )
+            if test_result.ran and not test_result.passed:
+                logger.warning(
+                    f"Tests failed after applying fix to {repo_name}: {test_result.detail}"
+                )
+                # Revert the fix by checking out the original file
+                self.repo_manager.cleanup_branch(repo_info, branch_name)
+                self.history.record_rejected_fix(
+                    repo_name, fix.file_path, fix_hash, reason=f"tests {test_result.status}"
+                )
+                self.history.record_pr(
+                    run_id,
+                    repo_name=repo_name,
+                    success=False,
+                    error=f"Tests {test_result.status} after applying fix",
+                    analysis_time=result.analysis_time_seconds,
+                    llm_tokens_used=result.llm_tokens_used,
+                )
+                return False
+            if test_result.ran:
+                logger.info(f"Tests passed after applying fix to {repo_name}")
+            else:
+                logger.debug(f"Tests skipped for {repo_name}: {test_result.detail}")
 
         # Commit changes
         commit_msg = f"{fix.pr_title}\n\n{fix.fix_description}"
@@ -427,6 +473,24 @@ class LucidPulls:
         if fix.related_issue:
             sections.append(f"**Related issue:** #{fix.related_issue}")
 
+        # Show the actual code change so reviewers can evaluate from
+        # email/mobile notifications without clicking "Files Changed"
+        sections.append("")
+        sections.append("## Code Changes")
+        diff_lines = LucidPulls._format_code_diff(
+            fix.original_code, fix.fixed_code
+        )
+        max_diff_lines = 60
+        if len(diff_lines) > max_diff_lines:
+            sections.append("```diff")
+            sections.extend(diff_lines[:max_diff_lines])
+            sections.append(f"... ({len(diff_lines) - max_diff_lines} more lines, see Files Changed)")
+            sections.append("```")
+        else:
+            sections.append("```diff")
+            sections.extend(diff_lines)
+            sections.append("```")
+
         sections.extend([
             "",
             "## Review Checklist",
@@ -436,6 +500,46 @@ class LucidPulls:
         ])
 
         return "\n".join(sections)
+
+    @staticmethod
+    def _format_code_diff(original: str, fixed: str) -> list[str]:
+        """Format original and fixed code as unified diff lines.
+
+        Args:
+            original: The original code snippet.
+            fixed: The fixed code snippet.
+
+        Returns:
+            List of diff-formatted lines with +/- prefixes.
+        """
+        import difflib
+
+        original_lines = original.splitlines(keepends=True)
+        fixed_lines = fixed.splitlines(keepends=True)
+        diff = difflib.unified_diff(
+            original_lines, fixed_lines, lineterm=""
+        )
+        # Skip the --- / +++ / @@ headers from unified_diff, keep the content
+        lines = []
+        for line in diff:
+            # Strip trailing newlines for clean rendering
+            lines.append(line.rstrip("\n"))
+        return lines
+
+    @staticmethod
+    def _compute_fix_hash(fix: object) -> str:
+        """Compute a stable hash for a fix to detect duplicates.
+
+        Args:
+            fix: FixSuggestion with original_code and fixed_code.
+
+        Returns:
+            SHA-256 hex digest of the fix content.
+        """
+        import hashlib
+
+        content = f"{fix.original_code}\n---\n{fix.fixed_code}"
+        return hashlib.sha256(content.encode()).hexdigest()
 
     def test_notifications(self) -> None:
         """Send a test notification to verify delivery is working."""
