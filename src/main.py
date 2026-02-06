@@ -42,8 +42,7 @@ class LucidPulls:
         self.settings = settings or load_settings()
 
         # Shutdown coordination
-        self._shutdown = False
-        self._lock = threading.Lock()
+        self._shutdown_requested = threading.Event()
         self._idle = threading.Event()
         self._idle.set()
         self._shutdown_event = threading.Event()
@@ -124,9 +123,8 @@ class LucidPulls:
             with ThreadPoolExecutor(max_workers=self.settings.max_workers) as executor:
                 futures = {}
                 for repo_name in repos:
-                    with self._lock:
-                        if self._shutdown:
-                            break
+                    if self._shutdown_requested.is_set():
+                        break
                     if self.deadline.is_past_deadline():
                         logger.warning("Deadline reached, not submitting more repos")
                         break
@@ -632,8 +630,7 @@ class LucidPulls:
         scheduler, then lets the main thread in start() handle cleanup.
         """
         logger.info(f"Received signal {signum}, shutting down...")
-        with self._lock:
-            self._shutdown = True
+        self._shutdown_requested.set()
         self._shutdown_event.set()
         self.scheduler.stop()
 

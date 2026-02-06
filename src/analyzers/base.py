@@ -1,11 +1,14 @@
 """Base analyzer interface and data models."""
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from src.models import GithubIssue
+
+logger = logging.getLogger("lucidpulls.analyzers.base")
 
 # Constants for file discovery
 MAX_FILES = 50  # Maximum number of files to analyze
@@ -266,7 +269,7 @@ class BaseAnalyzer(ABC):
         result = []
         total_chars = 0
 
-        for path, content in files:
+        for idx, (path, content) in enumerate(files):
             header = f"\n--- {path} ---\n"
             if total_chars + len(header) + len(content) > max_chars:
                 # Truncate if needed
@@ -275,6 +278,12 @@ class BaseAnalyzer(ABC):
                     result.append(header)
                     result.append(content[:remaining])
                     result.append("\n... [truncated]")
+                skipped = len(files) - idx - (1 if remaining > 500 else 0)
+                if skipped > 0:
+                    logger.warning(
+                        f"Skipped {skipped}/{len(files)} files due to size limit "
+                        f"({max_chars} chars)"
+                    )
                 break
 
             result.append(header)

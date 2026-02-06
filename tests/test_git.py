@@ -204,8 +204,9 @@ class TestRepoManagerSecurity:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             result = manager._pull_repo(Path(tmpdir), "main")
-            # Should not crash; should checkout default branch
+            # Should recover successfully and checkout default branch
             mock_repo.git.checkout.assert_called_with("main")
+            assert result is not None
 
 
 class TestPRCreator:

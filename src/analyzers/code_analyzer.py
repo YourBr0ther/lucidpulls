@@ -144,7 +144,7 @@ class CodeAnalyzer(BaseAnalyzer):
                     prompt, system_prompt=CODE_REVIEW_SYSTEM_PROMPT
                 )
                 response_content = llm_response.content
-                tokens_used = llm_response.tokens_used
+                tokens_used = llm_response.tokens_used or 0
             except (ValueError, httpx.TimeoutException) as e:
                 error_msg = "LLM request timed out" if isinstance(e, httpx.TimeoutException) else "LLM returned empty response after retries"
                 logger.error(f"LLM call failed after retries: {e}")

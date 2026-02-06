@@ -147,7 +147,7 @@ class TestLucidPullsRunReview:
         agent = LucidPulls(settings)
         agent.repo_manager.clone_or_pull = Mock()
         # Set shutdown before running
-        agent._shutdown = True
+        agent._shutdown_requested.set()
         agent.run_review()
 
         # Should not have tried to process any repos
@@ -375,6 +375,7 @@ class TestDryRun:
         analysis_result.found_fix = True
         analysis_result.fix = fix
         analysis_result.analysis_time_seconds = 1.5
+        analysis_result.llm_tokens_used = 500
         agent.code_analyzer.analyze = Mock(return_value=analysis_result)
         agent.code_analyzer.apply_fix = Mock(return_value=True)
         agent.repo_manager.create_branch = Mock(return_value=True)
@@ -389,11 +390,12 @@ class TestDryRun:
         agent.repo_manager.push_branch.assert_not_called()
         # cleanup_branch SHOULD be called (local cleanup)
         agent.repo_manager.cleanup_branch.assert_called_once()
-        # PR recorded with error="dry_run" and bug_description
+        # PR recorded with error="dry_run", bug_description, and token count
         record_call = mock_history.return_value.record_pr.call_args
         assert record_call[1]["error"] == "dry_run"
         assert record_call[1]["success"] is True
         assert record_call[1]["bug_description"] == "Something is broken"
+        assert record_call[1]["llm_tokens_used"] == 500
 
     @patch("src.main.get_notifier")
     @patch("src.main.get_llm")
@@ -425,6 +427,7 @@ class TestDryRun:
         analysis_result.found_fix = True
         analysis_result.fix = fix
         analysis_result.analysis_time_seconds = 1.5
+        analysis_result.llm_tokens_used = 750
         agent.code_analyzer.analyze = Mock(return_value=analysis_result)
         agent.code_analyzer.apply_fix = Mock(return_value=True)
         agent.repo_manager.create_branch = Mock(return_value=True)
@@ -437,9 +440,10 @@ class TestDryRun:
 
         assert result is True
         agent.repo_manager.push_branch.assert_called_once()
-        # bug_description should be passed through to record_pr
+        # bug_description and llm_tokens_used should be passed through to record_pr
         record_call = mock_history.return_value.record_pr.call_args
         assert record_call[1]["bug_description"] == "Something is broken"
+        assert record_call[1]["llm_tokens_used"] == 750
 
 
 class TestHealthCheck:
