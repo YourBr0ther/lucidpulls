@@ -127,6 +127,18 @@ class ReviewScheduler:
         """Start the scheduler (blocking)."""
         logger.info("Starting scheduler...")
         _write_heartbeat()
+
+        # Refresh heartbeat every 30 minutes so the k8s liveness probe
+        # doesn't kill the pod during long idle windows between jobs.
+        self.scheduler.add_job(
+            _write_heartbeat,
+            "interval",
+            minutes=30,
+            id="heartbeat",
+            replace_existing=True,
+            name="Heartbeat",
+        )
+
         self.scheduler.start()
 
     def stop(self) -> None:
