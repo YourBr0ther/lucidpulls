@@ -56,6 +56,18 @@ src/
 
 tests/                 # 12 test files, 314 tests, 80% coverage
 migrations/            # Alembic (0001 schema, 0002 indexes, 0003 bug_description, 0004 rejected_fixes)
+
+k8s/                   # Kubernetes/k3s manifests
+  namespace.yaml       # lucidpulls namespace
+  secret.yaml          # GitHub token, SSH key, API keys
+  configmap.yaml       # Non-secret configuration
+  pvc.yaml             # SQLite data persistence (1Gi, local-path)
+  deployment.yaml      # Single-replica deployment with health checks
+  kustomization.yaml   # Kustomize entrypoint
+
+Dockerfile             # Python 3.11-slim, non-root, SHA256-pinned
+docker-compose.yml     # Single-host deployment with resource limits
+entrypoint.sh          # Permission fixer + gosu drop to non-root
 ```
 
 ## Key Architecture Patterns
@@ -166,6 +178,44 @@ SQLite at `data/lucidpulls.db`. Three tables: `review_runs`, `pr_records`, and `
 - **Add a database migration**: Use Alembic: `alembic revision --autogenerate -m "description"`, then review the generated migration
 - **Change analysis behavior**: Modify prompts in `src/llm/base.py` (`CODE_REVIEW_SYSTEM_PROMPT`, `FIX_GENERATION_PROMPT_TEMPLATE`) or filtering logic in `CodeAnalyzer._parse_llm_response()`
 - **Add a syntax validator**: Add a `_validate_<lang>_syntax()` method to `CodeAnalyzer` and register it in `_validate_syntax()`
+
+## Docker Deployment
+
+```bash
+# Build and run with docker compose
+docker compose up -d
+
+# Build and push to Docker Hub
+docker build -t yourbr0ther/lucidpulls:latest .
+docker push yourbr0ther/lucidpulls:latest
+
+# Or use compose to build
+docker compose build
+docker compose push
+```
+
+## Kubernetes (k3s) Deployment
+
+```bash
+# Edit secrets and config first
+vim k8s/secret.yaml      # Add GitHub token, SSH key, API keys
+vim k8s/configmap.yaml   # Set repos, LLM provider, schedule
+
+# Deploy with kustomize
+kubectl apply -k k8s/
+
+# Check status
+kubectl -n lucidpulls get pods
+kubectl -n lucidpulls logs -f deployment/lucidpulls
+```
+
+The deployment uses:
+- Single replica (SQLite constraint) with `Recreate` strategy
+- PVC on `local-path` storage class for database persistence
+- Memory-backed emptyDir for temp clone directory
+- SSH key mounted as Kubernetes secret
+- Liveness probe via `--health-check`
+- 90s termination grace period for graceful shutdown
 
 ## Known Limitations
 

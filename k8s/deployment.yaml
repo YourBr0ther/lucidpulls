@@ -1,0 +1,74 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lucidpulls
+  namespace: lucidpulls
+  labels:
+    app: lucidpulls
+spec:
+  replicas: 1  # Single replica — SQLite doesn't support concurrent writers
+  strategy:
+    type: Recreate  # Avoid two pods writing to the same PVC
+  selector:
+    matchLabels:
+      app: lucidpulls
+  template:
+    metadata:
+      labels:
+        app: lucidpulls
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: lucidpulls
+          image: yourbr0ther/lucidpulls:latest
+          imagePullPolicy: Always
+          envFrom:
+            - configMapRef:
+                name: lucidpulls-config
+            - secretRef:
+                name: lucidpulls-secrets
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "4Gi"
+              cpu: "2000m"
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+            - name: ssh-key
+              mountPath: /home/lucidpulls/.ssh
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp/lucidpulls
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -m
+                - src.main
+                - --health-check
+            initialDelaySeconds: 60
+            periodSeconds: 60
+            timeoutSeconds: 10
+            failureThreshold: 3
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: lucidpulls-data
+        - name: ssh-key
+          secret:
+            secretName: lucidpulls-ssh
+            defaultMode: 0400
+            items:
+              - key: ssh-privatekey
+                path: id_rsa
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
+      terminationGracePeriodSeconds: 90  # Allow time for graceful shutdown

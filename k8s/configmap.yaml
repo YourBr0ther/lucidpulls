@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lucidpulls-config
+  namespace: lucidpulls
+data:
+  REPOS: "owner/repo1,owner/repo2"
+  LLM_PROVIDER: "ollama"
+  NOTIFICATION_CHANNEL: "discord"
+  SCHEDULE_START: "02:00"
+  SCHEDULE_DEADLINE: "06:00"
+  REPORT_DELIVERY: "07:00"
+  TIMEZONE: "America/New_York"
+  LOG_LEVEL: "INFO"
+  LOG_FORMAT: "json"
+  MAX_WORKERS: "3"
+  DRY_RUN: "False"
+  RUN_TESTS: "True"
+  TEST_TIMEOUT: "120"
+  CLONE_DIR: "/tmp/lucidpulls/repos"
+  MAX_CLONE_DISK_MB: "5000"
+  DB_BACKUP_ENABLED: "True"
+  DB_BACKUP_COUNT: "7"
+  # Ollama settings (if using ollama provider with in-cluster ollama)
+  OLLAMA_HOST: "http://ollama.lucidpulls.svc.cluster.local:11434"
+  OLLAMA_MODEL: "codellama"

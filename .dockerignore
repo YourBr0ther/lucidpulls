@@ -17,4 +17,10 @@ htmlcov/
 *.egg-info/
 dist/
 build/
+tests/
+docs/
+*.md
+!requirements.txt
+claude.md
+.claude/
 .DS_Store

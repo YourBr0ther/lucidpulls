@@ -1,7 +1,6 @@
-version: '3.8'
-
 services:
   lucidpulls:
+    image: ${DOCKER_IMAGE:-yourbr0ther/lucidpulls:latest}
     build: .
     container_name: lucidpulls
     restart: unless-stopped
@@ -10,23 +9,21 @@ services:
     volumes:
       # SQLite database persistence
       - ./data:/app/data
-      # SSH key for git operations (read-only) - mount only the key needed, not entire .ssh dir
-      - ~/.ssh/id_rsa:/home/lucidpulls/.ssh/id_rsa:ro
+      # SSH key for git operations (read-only) - supports id_rsa, id_ed25519, etc.
+      - ${SSH_KEY_PATH:-~/.ssh/id_rsa}:/home/lucidpulls/.ssh/id_rsa:ro
       - ~/.ssh/known_hosts:/home/lucidpulls/.ssh/known_hosts:ro
-      # Temporary directory for cloned repos
-      - /tmp/lucidpulls:/tmp/lucidpulls
+    # tmpfs for cloned repos — auto-cleaned on restart, faster I/O
+    tmpfs:
+      - /tmp/lucidpulls:size=2G,uid=1000,gid=1000
     environment:
       - TZ=${TIMEZONE:-America/New_York}
       - HOME=/home/lucidpulls
+    # Resource limits (works with docker compose without Swarm)
+    mem_limit: 4g
+    mem_reservation: 512m
+    cpus: 2.0
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
-    deploy:
-      resources:
-        limits:
-          cpus: '2.0'
-          memory: 4G
-        reservations:
-          memory: 512M
