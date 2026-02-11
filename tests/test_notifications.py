@@ -3,13 +3,14 @@
 from datetime import datetime
 from unittest.mock import Mock, patch
 
-import pytest
 import httpx
+import pytest
 
-from src.notifications.base import BaseNotifier, NotificationResult, PRSummary, ReviewReport
+from src.models import PRSummary
+from src.notifications import get_notifier
+from src.notifications.base import ReviewReport
 from src.notifications.discord import DiscordNotifier
 from src.notifications.teams import TeamsNotifier
-from src.notifications import get_notifier
 
 
 class TestReviewReport:
@@ -194,7 +195,7 @@ class TestDiscordNotifier:
         payload = notifier._build_discord_payload(report)
         value = payload["embeds"][0]["fields"][0]["value"]
         # Extract the blockquote line
-        blockquote = [l for l in value.split("\n") if l.startswith(">")][0]
+        blockquote = [line for line in value.split("\n") if line.startswith(">")][0]
         # "> " prefix + 120 chars max (119 chars + ellipsis)
         assert len(blockquote) <= 2 + 120  # "> " + truncated text
         assert blockquote.endswith("\u2026")
@@ -462,7 +463,7 @@ class TestPlainTextFormat:
         )
 
         text = notifier.format_report(report)
-        bug_line = [l for l in text.split("\n") if l.strip().startswith("Bug:")][0]
+        bug_line = [line for line in text.split("\n") if line.strip().startswith("Bug:")][0]
         # "    Bug: " prefix + 120 chars max
         content_after_prefix = bug_line.strip().removeprefix("Bug: ")
         assert len(content_after_prefix) == 120

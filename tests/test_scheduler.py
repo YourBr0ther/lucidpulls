@@ -3,10 +3,9 @@
 from datetime import datetime
 from unittest.mock import Mock, patch
 
-import pytest
 import pytz
 
-from src.scheduler import ReviewScheduler, DeadlineEnforcer
+from src.scheduler import DeadlineEnforcer, ReviewScheduler
 
 
 class TestReviewScheduler:

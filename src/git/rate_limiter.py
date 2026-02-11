@@ -41,6 +41,8 @@ class GitHubRateLimiter:
         self.github = github
         self._min_delay = min_delay
         self._last_call = 0.0
+        self._last_quota_check = 0.0
+        self._quota_cache_ttl = 30.0  # Cache rate limit check for 30 seconds
         self._lock = threading.Lock()
         self._shutdown_event = shutdown_event or threading.Event()
 
@@ -61,11 +63,15 @@ class GitHubRateLimiter:
         self._check_quota()
 
     def _check_quota(self) -> None:
-        """Check remaining GitHub API quota.
+        """Check remaining GitHub API quota (cached for 30s to reduce API calls).
 
         Raises:
             RateLimitExhausted: If quota is exhausted (remaining == 0).
         """
+        now = time.time()
+        if now - self._last_quota_check < self._quota_cache_ttl:
+            return
+        self._last_quota_check = now
         try:
             rate_limit = self.github.get_rate_limit()
             core = rate_limit.rate

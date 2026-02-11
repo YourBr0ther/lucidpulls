@@ -1,16 +1,14 @@
 """Review history tracking and database operations."""
 
 import logging
-import shutil
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
 from sqlalchemy import create_engine, event
-from sqlalchemy.orm import sessionmaker, Session, joinedload
+from sqlalchemy.orm import joinedload, sessionmaker, subqueryload
 
-from src.database.models import Base, ReviewRun, PRRecord, RejectedFix
+from src.database.models import PRRecord, RejectedFix, ReviewRun
 from src.models import PRSummary, ReviewReport
 
 logger = logging.getLogger("lucidpulls.database.history")
@@ -59,8 +57,8 @@ class ReviewHistory:
         - Existing DB with alembic_version: normal upgrade to head.
         - Existing DB without alembic_version: stamps at 0001, then upgrades.
         """
-        from alembic.config import Config
         from alembic import command
+        from alembic.config import Config
         from sqlalchemy import inspect
 
         try:
@@ -84,7 +82,7 @@ class ReviewHistory:
                 f"Check database at {self.db_path} for corruption."
             ) from e
 
-    def backup_database(self, backup_count: int = 7) -> Optional[str]:
+    def backup_database(self, backup_count: int = 7) -> str | None:
         """Create a backup of the database using SQLite's backup API.
 
         Args:
@@ -97,7 +95,7 @@ class ReviewHistory:
             backup_dir = Path(self.db_path).parent / "backups"
             backup_dir.mkdir(parents=True, exist_ok=True)
 
-            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
             backup_path = backup_dir / f"lucidpulls_{timestamp}.db"
 
             # Use sqlite3 backup API for a consistent snapshot
@@ -133,7 +131,7 @@ class ReviewHistory:
         """
         with self.SessionLocal() as session:
             run = ReviewRun(
-                started_at=datetime.now(timezone.utc),
+                started_at=datetime.now(UTC),
                 status="running",
             )
             session.add(run)
@@ -149,7 +147,7 @@ class ReviewHistory:
         run_id: int,
         repos_reviewed: int,
         prs_created: int,
-        error: Optional[str] = None,
+        error: str | None = None,
     ) -> bool:
         """Complete a review run.
 
@@ -166,7 +164,7 @@ class ReviewHistory:
             with self.SessionLocal() as session:
                 run = session.query(ReviewRun).filter(ReviewRun.id == run_id).first()
                 if run:
-                    run.completed_at = datetime.now(timezone.utc)
+                    run.completed_at = datetime.now(UTC)
                     run.repos_reviewed = repos_reviewed
                     run.prs_created = prs_created
                     run.status = "failed" if error else "completed"
@@ -183,14 +181,14 @@ class ReviewHistory:
         self,
         run_id: int,
         repo_name: str,
-        pr_number: Optional[int] = None,
-        pr_url: Optional[str] = None,
-        pr_title: Optional[str] = None,
+        pr_number: int | None = None,
+        pr_url: str | None = None,
+        pr_title: str | None = None,
         success: bool = False,
-        error: Optional[str] = None,
-        analysis_time: Optional[float] = None,
-        llm_tokens_used: Optional[int] = None,
-        bug_description: Optional[str] = None,
+        error: str | None = None,
+        analysis_time: float | None = None,
+        llm_tokens_used: int | None = None,
+        bug_description: str | None = None,
     ) -> bool:
         """Record a PR creation result.
 
@@ -233,7 +231,7 @@ class ReviewHistory:
             logger.error(f"Failed to record PR for {repo_name}: {e}")
             return False
 
-    def get_run(self, run_id: int) -> Optional[ReviewRun]:
+    def get_run(self, run_id: int) -> ReviewRun | None:
         """Get a specific review run by ID.
 
         Args:
@@ -250,7 +248,7 @@ class ReviewHistory:
                 .first()
             )
 
-    def get_latest_run(self) -> Optional[ReviewRun]:
+    def get_latest_run(self) -> ReviewRun | None:
         """Get the most recent review run.
 
         Returns:
@@ -280,7 +278,7 @@ class ReviewHistory:
                 .all()
             )
 
-    def build_report(self, run_id: int) -> Optional[ReviewReport]:
+    def build_report(self, run_id: int) -> ReviewReport | None:
         """Build a review report from a run.
 
         Args:
@@ -323,7 +321,7 @@ class ReviewHistory:
                 prs_created=run.prs_created,
                 prs=summaries,
                 start_time=run.started_at,
-                end_time=run.completed_at or datetime.now(timezone.utc),
+                end_time=run.completed_at or datetime.now(UTC),
                 llm_tokens_used=total_tokens,
             )
 
@@ -339,7 +337,7 @@ class ReviewHistory:
         with self.SessionLocal() as session:
             return (
                 session.query(ReviewRun)
-                .options(joinedload(ReviewRun.prs))
+                .options(subqueryload(ReviewRun.prs))
                 .order_by(ReviewRun.started_at.desc())
                 .limit(limit)
                 .all()
@@ -377,7 +375,7 @@ class ReviewHistory:
         repo_name: str,
         file_path: str,
         fix_hash: str,
-        reason: Optional[str] = None,
+        reason: str | None = None,
     ) -> bool:
         """Record a fix as rejected so it won't be re-suggested.
 
@@ -397,7 +395,7 @@ class ReviewHistory:
                     file_path=file_path,
                     fix_hash=fix_hash,
                     reason=reason,
-                    created_at=datetime.now(timezone.utc),
+                    created_at=datetime.now(UTC),
                 )
                 session.add(record)
                 session.commit()

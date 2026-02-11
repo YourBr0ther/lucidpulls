@@ -3,8 +3,9 @@
 import logging
 import re
 import time
+from collections.abc import Callable
 from functools import wraps
-from typing import Callable, TypeVar, Any
+from typing import Any, TypeVar
 
 T = TypeVar("T")
 
@@ -93,8 +94,8 @@ def parse_time_string(time_str: str) -> tuple[int, int]:
 
     try:
         hour, minute = int(parts[0]), int(parts[1])
-    except ValueError:
-        raise ValueError(f"Invalid time format '{time_str}', expected numeric HH:MM")
+    except ValueError as err:
+        raise ValueError(f"Invalid time format '{time_str}', expected numeric HH:MM") from err
 
     if not (0 <= hour <= 23 and 0 <= minute <= 59):
         raise ValueError(f"Time out of range: {time_str}")

@@ -7,13 +7,17 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Literal, Optional
 
 import httpx
 from pydantic import BaseModel, field_validator
 
-from src.analyzers.base import BaseAnalyzer, AnalysisResult, FixSuggestion, TestResult
-from src.llm.base import BaseLLM, CODE_REVIEW_SYSTEM_PROMPT, FIX_GENERATION_PROMPT_TEMPLATE
+from src.analyzers.base import AnalysisResult, BaseAnalyzer, FixSuggestion, TestResult
+from src.llm.base import (
+    CODE_REVIEW_SYSTEM_PROMPT,
+    FIX_GENERATION_PROMPT_TEMPLATE,
+    BaseLLM,
+    LLMResponse,
+)
 from src.models import GithubIssue
 from src.utils import retry
 
@@ -32,7 +36,7 @@ class LLMFixResponse(BaseModel):
     pr_title: str = ""
     pr_body: str = ""
     confidence: str = "low"
-    related_issue: Optional[int] = None
+    related_issue: int | None = None
 
     @field_validator("file_path")
     @classmethod
@@ -46,7 +50,7 @@ class LLMFixResponse(BaseModel):
 
     @field_validator("related_issue", mode="before")
     @classmethod
-    def coerce_related_issue(cls, v: object) -> Optional[int]:
+    def coerce_related_issue(cls, v: object) -> int | None:
         """Coerce related_issue to int, handling strings/floats/booleans from LLMs."""
         if v is None or v is False or v == "":
             return None
@@ -74,7 +78,7 @@ class CodeAnalyzer(BaseAnalyzer):
         backoff=2.0,
         exceptions=(ValueError, ConnectionError, TimeoutError, OSError, httpx.RequestError),
     )
-    def _call_llm_with_retry(self, prompt: str, system_prompt: str) -> "LLMResponse":
+    def _call_llm_with_retry(self, prompt: str, system_prompt: str) -> LLMResponse:
         """Call LLM with retry logic.
 
         Args:
@@ -96,7 +100,7 @@ class CodeAnalyzer(BaseAnalyzer):
         self,
         repo_path: Path,
         repo_name: str,
-        issues: Optional[list[GithubIssue]] = None,
+        issues: list[GithubIssue] | None = None,
     ) -> AnalysisResult:
         """Analyze a repository for bugs.
 
@@ -145,8 +149,13 @@ class CodeAnalyzer(BaseAnalyzer):
                 )
                 response_content = llm_response.content
                 tokens_used = llm_response.tokens_used
-            except (ValueError, httpx.TimeoutException) as e:
-                error_msg = "LLM request timed out" if isinstance(e, httpx.TimeoutException) else "LLM returned empty response after retries"
+            except (ValueError, ConnectionError, TimeoutError, OSError, httpx.RequestError, httpx.TimeoutException) as e:
+                if isinstance(e, (httpx.TimeoutException, TimeoutError)):
+                    error_msg = "LLM request timed out"
+                elif isinstance(e, (ConnectionError, OSError, httpx.RequestError)):
+                    error_msg = "LLM connection failed after retries"
+                else:
+                    error_msg = "LLM returned empty response after retries"
                 logger.error(f"LLM call failed after retries: {e}")
                 return AnalysisResult(
                     repo_name=repo_name,
@@ -213,7 +222,7 @@ class CodeAnalyzer(BaseAnalyzer):
 
     MAX_LLM_RESPONSE_SIZE = 500_000  # 500KB
 
-    def _parse_llm_response(self, response: str) -> Optional[FixSuggestion]:
+    def _parse_llm_response(self, response: str) -> FixSuggestion | None:
         """Parse LLM response into a FixSuggestion using Pydantic validation.
 
         Args:
@@ -284,7 +293,7 @@ class CodeAnalyzer(BaseAnalyzer):
             logger.error(f"Error parsing LLM response ({type(e).__name__}): {e}")
             return None
 
-    def _extract_json(self, text: str) -> Optional[str]:
+    def _extract_json(self, text: str) -> str | None:
         """Extract JSON object from text using string-aware brace matching.
 
         LLM responses may contain markdown code fences (```json ... ```) around
@@ -451,7 +460,7 @@ class CodeAnalyzer(BaseAnalyzer):
             logger.error(f"Failed to apply fix: {e}")
             return False
 
-    def _validate_syntax(self, file_path: Path, repo_path: Optional[Path] = None) -> bool:
+    def _validate_syntax(self, file_path: Path, repo_path: Path | None = None) -> bool:
         """Validate file syntax after fix.
 
         Args:
@@ -539,7 +548,7 @@ class CodeAnalyzer(BaseAnalyzer):
         """
         try:
             result = subprocess.run(
-                ["npx", "--yes", "typescript", "tsc", "--noEmit", "--allowJs",
+                ["npx", "--no-install", "tsc", "--noEmit", "--allowJs",
                  "--esModuleInterop", "--jsx", "react-jsx",
                  "--isolatedModules", "--noResolve",
                  "--moduleResolution", "bundler",
@@ -616,10 +625,12 @@ class CodeAnalyzer(BaseAnalyzer):
             if result.returncode == 0:
                 return True
             stderr = (result.stdout + result.stderr).decode(errors="replace")
-            # "error:" with no "cannot find symbol" → likely syntax error
-            if "error:" in stderr and "cannot find symbol" not in stderr:
-                logger.debug(f"Java syntax error found in {file_path}")
-                return False
+            # Check each error line individually — reject if any line has a syntax
+            # error, even if other lines have "cannot find symbol" import errors.
+            for line in stderr.splitlines():
+                if "error:" in line and "cannot find symbol" not in line:
+                    logger.debug(f"Java syntax error found in {file_path}")
+                    return False
             return True
         except FileNotFoundError:
             logger.debug("javac not available, skipping Java syntax validation")
@@ -631,7 +642,7 @@ class CodeAnalyzer(BaseAnalyzer):
             logger.debug(f"Java syntax validation error (skipping): {e}")
             return True
 
-    def _validate_rust_syntax(self, file_path: Path, repo_path: Optional[Path] = None) -> bool:
+    def _validate_rust_syntax(self, file_path: Path, repo_path: Path | None = None) -> bool:
         """Validate Rust syntax using rustc (parse-only via --edition flag).
 
         Args:
@@ -729,7 +740,7 @@ class CodeAnalyzer(BaseAnalyzer):
             return TestResult(status="skipped", detail=f"Error running tests: {e}")
 
     @staticmethod
-    def _detect_test_command(repo_path: Path) -> Optional[list[str]]:
+    def _detect_test_command(repo_path: Path) -> list[str] | None:
         """Detect the appropriate test command for a repository.
 
         Args:

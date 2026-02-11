@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, TypedDict
+from typing import TypedDict
 
 
 class GithubIssue(TypedDict, total=False):
@@ -13,7 +13,7 @@ class GithubIssue(TypedDict, total=False):
     body: str
     labels: list[str]
     url: str
-    created_at: Optional[str]
+    created_at: str | None
 
 
 @dataclass
@@ -21,12 +21,12 @@ class PRSummary:
     """Summary of a created PR."""
 
     repo_name: str
-    pr_number: Optional[int]
-    pr_url: Optional[str]
-    pr_title: Optional[str]
+    pr_number: int | None
+    pr_url: str | None
+    pr_title: str | None
     success: bool
-    error: Optional[str] = None
-    bug_description: Optional[str] = None
+    error: str | None = None
+    bug_description: str | None = None
 
 
 @dataclass
@@ -39,7 +39,7 @@ class ReviewReport:
     prs: list[PRSummary]
     start_time: datetime
     end_time: datetime
-    llm_tokens_used: Optional[int] = None
+    llm_tokens_used: int | None = None
 
     @property
     def duration_str(self) -> str:

@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.config import Settings, load_settings
+from src.config import Settings
 
 
 class TestSettings:

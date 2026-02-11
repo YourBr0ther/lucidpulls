@@ -1,9 +1,8 @@
 """SQLAlchemy database models."""
 
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
-from sqlalchemy import Column, Float, Integer, String, DateTime, Boolean, ForeignKey, Index, Text
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, relationship
 
 
@@ -18,7 +17,7 @@ class ReviewRun(Base):
     __tablename__ = "review_runs"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    started_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), index=True)
+    started_at = Column(DateTime, nullable=False, default=lambda: datetime.now(UTC), index=True)
     completed_at = Column(DateTime, nullable=True)
     repos_reviewed = Column(Integer, default=0)
     prs_created = Column(Integer, default=0)
@@ -48,7 +47,7 @@ class PRRecord(Base):
     analysis_time = Column(Float, nullable=True)
     llm_tokens_used = Column(Integer, nullable=True)
     bug_description = Column(Text, nullable=True)
-    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), index=True)
+    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(UTC), index=True)
 
     # Relationship back to review run
     review_run = relationship("ReviewRun", back_populates="prs")
@@ -68,7 +67,7 @@ class RejectedFix(Base):
     file_path = Column(String(500), nullable=False)
     fix_hash = Column(String(64), nullable=False)
     reason = Column(String(255), nullable=True)
-    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(UTC))
 
     __table_args__ = (
         Index("ix_rejected_fixes_lookup", "repo_name", "file_path", "fix_hash"),

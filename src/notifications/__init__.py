@@ -1,7 +1,7 @@
 """Notification channel implementations."""
 
-from src.notifications.base import BaseNotifier, NotificationResult
 from src.models import PRSummary, ReviewReport
+from src.notifications.base import BaseNotifier, NotificationResult
 from src.notifications.discord import DiscordNotifier
 from src.notifications.teams import TeamsNotifier
 

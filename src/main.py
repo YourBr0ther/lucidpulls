@@ -7,27 +7,25 @@ import os
 import signal
 import sys
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 import pytz
 from github import Auth, Github
 
-from src import setup_logging, current_run_id
-from src.utils import sanitize_branch_name
-from src.config import load_settings, Settings
-from src.database import ReviewHistory
-from src.git import RepoManager, PRCreator, GitHubRateLimiter, RateLimitExhausted
-from src.git.repo_manager import RepoInfo
-from src.llm import get_llm
+from src import current_run_id, setup_logging
 from src.analyzers import CodeAnalyzer, IssueAnalyzer
 from src.analyzers.base import FixSuggestion
+from src.config import Settings, load_settings
+from src.database import ReviewHistory
+from src.git import GitHubRateLimiter, PRCreator, RateLimitExhausted, RepoManager
+from src.git.repo_manager import RepoInfo
+from src.llm import get_llm
 from src.models import PRSummary, ReviewReport
 from src.notifications import get_notifier
-from src.scheduler import ReviewScheduler, DeadlineEnforcer, _write_heartbeat
+from src.scheduler import DeadlineEnforcer, ReviewScheduler, _write_heartbeat
+from src.utils import sanitize_branch_name
 
 logger = logging.getLogger("lucidpulls.main")
 
@@ -35,7 +33,7 @@ logger = logging.getLogger("lucidpulls.main")
 class LucidPulls:
     """Main orchestrator for the LucidPulls agent."""
 
-    def __init__(self, settings: Optional[Settings] = None):
+    def __init__(self, settings: Settings | None = None):
         """Initialize LucidPulls.
 
         Args:
@@ -145,6 +143,15 @@ class LucidPulls:
                         for f in futures:
                             if not f.done():
                                 f.cancel()
+                        # Drain already-completed futures for accurate accounting
+                        for f in futures:
+                            if f.done() and not f.cancelled():
+                                try:
+                                    if f.result():
+                                        prs_created += 1
+                                    repos_reviewed += 1
+                                except Exception:
+                                    repos_reviewed += 1
                         break
                     repo_name = futures[future]
                     try:
@@ -531,17 +538,12 @@ class LucidPulls:
         """
         import difflib
 
-        original_lines = original.splitlines(keepends=True)
-        fixed_lines = fixed.splitlines(keepends=True)
+        original_lines = original.splitlines()
+        fixed_lines = fixed.splitlines()
         diff = difflib.unified_diff(
             original_lines, fixed_lines, lineterm=""
         )
-        # Include all unified diff lines (headers + content) for readable PR display
-        lines = []
-        for line in diff:
-            # Strip trailing newlines for clean rendering
-            lines.append(line.rstrip("\n"))
-        return lines
+        return list(diff)
 
     @staticmethod
     def _compute_fix_hash(fix: FixSuggestion) -> str:
@@ -612,6 +614,12 @@ class LucidPulls:
             logger.warning("No review runs found for report")
             return
 
+        if run.status != "completed":
+            logger.warning(
+                f"Latest run #{run.id} has status '{run.status}', skipping report"
+            )
+            return
+
         # Convert UTC to local timezone for comparison
         tz = pytz.timezone(self.settings.timezone)
         now_local = datetime.now(tz)
@@ -648,7 +656,9 @@ class LucidPulls:
                     f"Notification failed (attempt {attempt}/{max_attempts}): "
                     f"{result.error} — retrying in {retry_delay}s"
                 )
-                time.sleep(retry_delay)
+                if self._shutdown_requested.wait(timeout=retry_delay):
+                    logger.info("Shutdown requested, aborting report retry")
+                    return
             else:
                 logger.error(
                     f"Failed to send report after {max_attempts} attempts: {result.error}"
@@ -707,7 +717,7 @@ class LucidPulls:
 
         # Validate GitHub token using the shared client
         try:
-            self._github.get_user().login
+            _ = self._github.get_user().login
         except Exception as e:
             logger.error(f"GitHub token validation failed: {e}")
             sys.exit(1)

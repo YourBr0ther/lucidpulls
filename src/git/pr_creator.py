@@ -2,7 +2,6 @@
 
 import logging
 from dataclasses import dataclass
-from typing import Optional
 
 from github import Github, GithubException
 
@@ -20,9 +19,9 @@ class PRResult:
     """Result of a pull request creation."""
 
     success: bool
-    pr_number: Optional[int] = None
-    pr_url: Optional[str] = None
-    error: Optional[str] = None
+    pr_number: int | None = None
+    pr_url: str | None = None
+    error: str | None = None
 
 
 class PRCreator:
@@ -70,6 +69,7 @@ class PRCreator:
             repo = self.github.get_repo(repo_full_name)
 
             # Try label-based search first (efficient)
+            label_search_succeeded = False
             try:
                 labeled_issues = repo.get_issues(
                     state="open", labels=[LUCIDPULLS_LABEL]
@@ -78,15 +78,17 @@ class PRCreator:
                     if issue.pull_request is not None:
                         logger.info(f"Found existing LucidPulls PR: #{issue.number}")
                         return True
+                label_search_succeeded = True
             except GithubException:
                 pass
 
             # Fallback: check branch prefix for PRs created before labeling
-            open_prs = repo.get_pulls(state="open")
-            for pr in open_prs:
-                if pr.head.ref.startswith("lucidpulls/"):
-                    logger.info(f"Found existing LucidPulls PR: #{pr.number}")
-                    return True
+            if not label_search_succeeded:
+                open_prs = repo.get_pulls(state="open")
+                for pr in open_prs:
+                    if pr.head.ref.startswith("lucidpulls/"):
+                        logger.info(f"Found existing LucidPulls PR: #{pr.number}")
+                        return True
 
             return False
         except GithubException as e:
@@ -103,7 +105,7 @@ class PRCreator:
         base_branch: str,
         title: str,
         body: str,
-        related_issue: Optional[int] = None,
+        related_issue: int | None = None,
     ) -> PRResult:
         """Create a pull request.
 
@@ -178,7 +180,7 @@ class PRCreator:
     def get_open_issues(
         self,
         repo_full_name: str,
-        labels: Optional[list[str]] = None,
+        labels: list[str] | None = None,
         limit: int = 20,
     ) -> list[GithubIssue]:
         """Get open issues from a repository.
@@ -245,7 +247,7 @@ class PRCreator:
             number=issue.number,  # type: ignore[attr-defined]
             title=issue.title,  # type: ignore[attr-defined]
             body=issue.body or "",  # type: ignore[attr-defined]
-            labels=[l.name for l in issue.labels],  # type: ignore[attr-defined]
+            labels=[label.name for label in issue.labels],  # type: ignore[attr-defined]
             url=issue.html_url,  # type: ignore[attr-defined]
             created_at=issue.created_at.isoformat() if issue.created_at else None,  # type: ignore[attr-defined]
         )

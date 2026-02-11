@@ -189,8 +189,8 @@ class Settings(BaseSettings):
         try:
             pytz.timezone(v)
             return v
-        except pytz.UnknownTimeZoneError:
-            raise ValueError(f"Invalid timezone: {v}. Must be a valid IANA timezone name.")
+        except pytz.UnknownTimeZoneError as err:
+            raise ValueError(f"Invalid timezone: {v}. Must be a valid IANA timezone name.") from err
 
     @field_validator("schedule_start", "schedule_deadline", "report_delivery")
     @classmethod

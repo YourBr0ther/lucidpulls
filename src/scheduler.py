@@ -3,13 +3,13 @@
 import logging
 import os
 import time as _time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Optional
 
+import pytz
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
-import pytz
 
 from src.utils import parse_time_string
 
@@ -17,7 +17,7 @@ logger = logging.getLogger("lucidpulls.scheduler")
 
 # Heartbeat file for health checks — written on start and after each job
 _default_heartbeat = "/app/data/heartbeat" if Path("/app").is_dir() else "data/heartbeat"
-HEARTBEAT_PATH = Path(os.environ.get("HEARTBEAT_PATH", _default_heartbeat))
+HEARTBEAT_PATH = Path(os.environ.get("HEARTBEAT_PATH", _default_heartbeat)).resolve()
 
 
 def _write_heartbeat() -> None:
@@ -134,7 +134,7 @@ class ReviewScheduler:
         logger.info("Stopping scheduler...")
         self.scheduler.shutdown(wait=False)
 
-    def get_next_run_time(self, job_id: Optional[str] = None) -> Optional[datetime]:
+    def get_next_run_time(self, job_id: str | None = None) -> datetime | None:
         """Get next scheduled run time.
 
         Args:
@@ -165,7 +165,7 @@ class DeadlineEnforcer:
         """
         self.deadline_hour, self.deadline_minute = parse_time_string(deadline_time)
         self.timezone = pytz.timezone(timezone)
-        self._review_started_at: Optional[datetime] = None
+        self._review_started_at: datetime | None = None
 
     def mark_review_started(self) -> None:
         """Record that a review cycle has started. Call at the start of each run."""
@@ -206,7 +206,7 @@ class DeadlineEnforcer:
         deadline = self._get_deadline_for_current_cycle()
         return now >= deadline
 
-    def time_remaining(self) -> Optional[int]:
+    def time_remaining(self) -> int | None:
         """Get seconds remaining until the deadline.
 
         Returns:

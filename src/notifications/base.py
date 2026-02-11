@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from src.models import PRSummary, ReviewReport
+from src.models import ReviewReport
 
 
 @dataclass

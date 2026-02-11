@@ -1,15 +1,15 @@
 """Tests for LLM providers."""
 
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 
-import pytest
 import httpx
+import pytest
 
-from src.llm.base import BaseLLM, LLMResponse
-from src.llm.ollama import OllamaLLM
-from src.llm.azure import AzureLLM
-from src.llm.nanogpt import NanoGPTLLM
 from src.llm import get_llm
+from src.llm.azure import AzureLLM
+from src.llm.base import LLMResponse
+from src.llm.nanogpt import NanoGPTLLM
+from src.llm.ollama import OllamaLLM
 
 
 class TestLLMResponse:
@@ -45,6 +45,7 @@ class TestOllamaLLM:
     def test_generate_success(self, mock_post):
         """Test successful generation."""
         mock_response = Mock()
+        mock_response.status_code = 200
         mock_response.json.return_value = {
             "response": "Test response",
             "eval_count": 100,
@@ -63,6 +64,7 @@ class TestOllamaLLM:
     def test_generate_with_system_prompt(self, mock_post):
         """Test generation with system prompt."""
         mock_response = Mock()
+        mock_response.status_code = 200
         mock_response.json.return_value = {"response": "Test"}
         mock_post.return_value = mock_response
 
@@ -131,6 +133,7 @@ class TestAzureLLM:
     def test_generate_success(self, mock_post):
         """Test successful generation."""
         mock_response = Mock()
+        mock_response.status_code = 200
         mock_response.json.return_value = {
             "choices": [
                 {"message": {"content": "Test response"}, "finish_reason": "stop"}
@@ -168,6 +171,7 @@ class TestNanoGPTLLM:
     def test_generate_success(self, mock_post):
         """Test successful generation."""
         mock_response = Mock()
+        mock_response.status_code = 200
         mock_response.json.return_value = {
             "choices": [
                 {"message": {"content": "Test response"}, "finish_reason": "stop"}

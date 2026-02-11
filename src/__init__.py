@@ -4,8 +4,7 @@ import contextvars
 import json
 import logging
 import sys
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 # Context variable for correlating logs within a review run
 current_run_id: contextvars.ContextVar[str] = contextvars.ContextVar(
@@ -26,7 +25,7 @@ class JSONFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         log_entry = {
-            "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+            "timestamp": datetime.fromtimestamp(record.created, tz=UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "run_id": getattr(record, "run_id", "-"),
@@ -37,7 +36,7 @@ class JSONFormatter(logging.Formatter):
         return json.dumps(log_entry, default=str)
 
 
-def setup_logging(level: Optional[str] = None, log_format: str = "text") -> logging.Logger:
+def setup_logging(level: str | None = None, log_format: str = "text") -> logging.Logger:
     """Configure logging for the application.
 
     Args:

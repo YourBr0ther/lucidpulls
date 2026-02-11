@@ -1,12 +1,10 @@
 """Tests for the main orchestrator."""
 
-import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 
 import pytest
-import pytz
 
 from src.main import LucidPulls, main
 
@@ -248,12 +246,11 @@ class TestLucidPullsSendReport:
         settings = _make_settings()
 
         # Simulate run that started yesterday at 11:50 PM UTC
-        tz = pytz.timezone("America/New_York")
-        now_local = datetime.now(tz)
-        yesterday_utc = datetime.now(timezone.utc) - timedelta(hours=5)
+        yesterday_utc = datetime.now(UTC) - timedelta(hours=5)
 
         mock_run = Mock()
         mock_run.id = 1
+        mock_run.status = "completed"
         mock_run.started_at = yesterday_utc.replace(tzinfo=None)  # naive UTC
         mock_history.return_value.get_latest_run.return_value = mock_run
         mock_history.return_value.build_report.return_value = Mock()

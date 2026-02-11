@@ -5,14 +5,14 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock, PropertyMock
+from unittest.mock import MagicMock, Mock, PropertyMock, patch
 
 import pytest
 from github import GithubException
 
-from src.git.rate_limiter import GitHubRateLimiter, RateLimitExhausted
-from src.git.repo_manager import RepoManager, RepoInfo
 from src.git.pr_creator import PRCreator, PRResult
+from src.git.rate_limiter import GitHubRateLimiter, RateLimitExhausted
+from src.git.repo_manager import RepoInfo, RepoManager
 
 
 def _make_repo_manager(**overrides):
@@ -121,8 +121,13 @@ class TestRepoManager:
 
     def test_push_branch(self):
         """Test pushing a branch."""
+        from git.remote import PushInfo
         mock_repo = Mock()
         mock_origin = Mock()
+        mock_push_info = Mock(spec=PushInfo)
+        mock_push_info.flags = 0  # No error flags
+        mock_push_info.ERROR = PushInfo.ERROR
+        mock_origin.push.return_value = [mock_push_info]
         mock_repo.remotes.origin = mock_origin
 
         repo_info = RepoInfo(
@@ -324,14 +329,14 @@ class TestHasOpenLucidpullsPR:
         assert creator.has_open_lucidpulls_pr("owner/repo") is True
 
     def test_returns_true_via_branch_fallback(self):
-        """Test returns True via branch prefix fallback."""
+        """Test returns True via branch prefix fallback when label search fails."""
         from github import GithubException
         mock_pr = Mock()
         mock_pr.head.ref = "lucidpulls/20240115-fix"
         mock_pr.number = 42
         mock_repo = Mock()
-        # Label search returns nothing
-        mock_repo.get_issues.return_value = []
+        # Label search raises exception (triggering fallback)
+        mock_repo.get_issues.side_effect = GithubException(500, "Server error", None)
         mock_repo.get_pulls.return_value = [mock_pr]
         mock_github = Mock()
         mock_github.get_repo.return_value = mock_repo
@@ -822,12 +827,12 @@ class TestRepoManagerSSH:
 
     def test_setup_ssh_no_key_path(self):
         """Test that SSH setup is skipped when no key path."""
-        manager = _make_repo_manager(ssh_key_path=None)
+        _make_repo_manager(ssh_key_path=None)
         assert "GIT_SSH_COMMAND" not in os.environ or "lucidpulls" not in os.environ.get("GIT_SSH_COMMAND", "")
 
     def test_setup_ssh_missing_key(self):
         """Test that SSH setup warns on missing key file."""
-        manager = _make_repo_manager(ssh_key_path="/nonexistent/key")
+        _make_repo_manager(ssh_key_path="/nonexistent/key")
         # Should not set GIT_SSH_COMMAND when key doesn't exist
 
     def test_setup_ssh_valid_key(self):
@@ -837,7 +842,7 @@ class TestRepoManagerSSH:
             key_path = f.name
 
         try:
-            manager = _make_repo_manager(ssh_key_path=key_path)
+            _make_repo_manager(ssh_key_path=key_path)
             ssh_cmd = os.environ.get("GIT_SSH_COMMAND", "")
             assert "StrictHostKeyChecking=yes" in ssh_cmd
             assert key_path in ssh_cmd
@@ -852,7 +857,7 @@ class TestRepoManagerSSH:
             key_path = f.name
 
         try:
-            manager = _make_repo_manager(ssh_key_path=key_path)
+            _make_repo_manager(ssh_key_path=key_path)
             known_hosts = Path.home() / ".ssh" / "known_hosts"
             if known_hosts.exists():
                 content = known_hosts.read_text()
@@ -1039,7 +1044,7 @@ class TestRepoManagerCloneOrPullEdgeCases:
             mock_repo_class.clone_from.return_value = mock_cloned
 
             manager = _make_repo_manager(github=mock_github, clone_dir=tmpdir)
-            result = manager.clone_or_pull("owner/repo")
+            manager.clone_or_pull("owner/repo")
 
             # Should have attempted clone after pull failed
             assert mock_repo_class.clone_from.called

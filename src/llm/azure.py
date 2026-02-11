@@ -1,11 +1,10 @@
 """Azure AI Studios LLM client implementation."""
 
 import logging
-from typing import Optional
 
 import httpx
 
-from src.llm.base import BaseHTTPLLM, LLMResponse, DEFAULT_TIMEOUT, DEFAULT_MAX_TOKENS
+from src.llm.base import DEFAULT_MAX_TOKENS, DEFAULT_TIMEOUT, BaseHTTPLLM, LLMResponse
 from src.utils import retry
 
 logger = logging.getLogger("lucidpulls.llm.azure")
@@ -35,7 +34,7 @@ class AzureLLM(BaseHTTPLLM):
         self.deployment_name = deployment_name
         self.api_version = api_version
 
-    def generate(self, prompt: str, system_prompt: Optional[str] = None) -> LLMResponse:
+    def generate(self, prompt: str, system_prompt: str | None = None) -> LLMResponse:
         """Generate a response using Azure OpenAI.
 
         Args:
@@ -52,7 +51,7 @@ class AzureLLM(BaseHTTPLLM):
             return LLMResponse(content="", model=self.deployment_name)
 
     @retry(max_attempts=3, delay=2.0, backoff=2.0, exceptions=(httpx.HTTPStatusError, httpx.RequestError))
-    def _generate_with_retry(self, prompt: str, system_prompt: Optional[str] = None) -> LLMResponse:
+    def _generate_with_retry(self, prompt: str, system_prompt: str | None = None) -> LLMResponse:
         """Internal generate method with retry logic."""
         url = (
             f"{self.endpoint}/openai/deployments/{self.deployment_name}"
@@ -78,7 +77,10 @@ class AzureLLM(BaseHTTPLLM):
         logger.debug(f"Sending request to Azure: deployment={self.deployment_name}")
 
         response = self._client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
+        # Fail fast on non-retryable 4xx (bad credentials, bad request, etc.)
+        if 400 <= response.status_code < 500 and response.status_code != 429:
+            raise ValueError(f"Azure HTTP {response.status_code}: {response.text[:200]}")
+        response.raise_for_status()  # 429/5xx — retried by decorator
 
         try:
             data = response.json()

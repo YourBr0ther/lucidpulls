@@ -1,14 +1,12 @@
 """Tests for database operations."""
 
 import tempfile
-from datetime import datetime
 from pathlib import Path
 
-import pytest
 from sqlalchemy import create_engine, inspect, text
 
-from src.database.models import Base, ReviewRun, PRRecord
 from src.database.history import ReviewHistory
+from src.database.models import Base
 
 
 class TestReviewHistory:
@@ -18,7 +16,7 @@ class TestReviewHistory:
         """Test initialization creates tables."""
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = f"{tmpdir}/test.db"
-            history = ReviewHistory(db_path=db_path)
+            ReviewHistory(db_path=db_path)
 
             # Verify file was created
             assert Path(db_path).exists()
@@ -123,7 +121,7 @@ class TestReviewHistory:
         with tempfile.TemporaryDirectory() as tmpdir:
             history = ReviewHistory(db_path=f"{tmpdir}/test.db")
 
-            run_id1 = history.start_run()
+            history.start_run()
             run_id2 = history.start_run()
 
             latest = history.get_latest_run()

@@ -1,7 +1,7 @@
 """LLM provider implementations."""
 
-from src.llm.base import BaseLLM, BaseHTTPLLM, LLMResponse, DEFAULT_TIMEOUT, DEFAULT_MAX_TOKENS
 from src.llm.azure import AzureLLM
+from src.llm.base import DEFAULT_MAX_TOKENS, DEFAULT_TIMEOUT, BaseHTTPLLM, BaseLLM, LLMResponse
 from src.llm.nanogpt import NanoGPTLLM
 from src.llm.ollama import OllamaLLM
 

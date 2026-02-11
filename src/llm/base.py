@@ -3,7 +3,6 @@
 import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
 
 import httpx
 
@@ -18,8 +17,8 @@ class LLMResponse:
 
     content: str
     model: str
-    tokens_used: Optional[int] = None
-    finish_reason: Optional[str] = None
+    tokens_used: int | None = None
+    finish_reason: str | None = None
 
     @property
     def success(self) -> bool:
@@ -31,7 +30,7 @@ class BaseLLM(ABC):
     """Abstract base class for LLM providers."""
 
     @abstractmethod
-    def generate(self, prompt: str, system_prompt: Optional[str] = None) -> LLMResponse:
+    def generate(self, prompt: str, system_prompt: str | None = None) -> LLMResponse:
         """Generate a response from the LLM.
 
         Args:

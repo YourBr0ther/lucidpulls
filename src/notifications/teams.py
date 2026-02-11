@@ -55,7 +55,10 @@ class TeamsNotifier(BaseNotifier):
            exceptions=(httpx.HTTPStatusError, httpx.RequestError))
     def _send_with_retry(self, payload: dict) -> None:
         response = self._client.post(self.webhook_url, json=payload)
-        response.raise_for_status()
+        # Fail fast on non-retryable 4xx (bad webhook URL, malformed payload, etc.)
+        if 400 <= response.status_code < 500 and response.status_code != 429:
+            raise ValueError(f"Teams HTTP {response.status_code}: {response.text[:200]}")
+        response.raise_for_status()  # 429/5xx — retried by decorator
 
     def _build_teams_payload(self, report: ReviewReport) -> dict:
         """Build Teams Adaptive Card payload.

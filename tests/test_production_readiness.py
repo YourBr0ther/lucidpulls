@@ -5,17 +5,13 @@ import json
 import logging
 import sqlite3
 import tempfile
-import time
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 
-import pytest
 from sqlalchemy import inspect, text
 
 from src.database.history import ReviewHistory
-from src.database.models import Base
-
 
 # ---------------------------------------------------------------------------
 # 1. Database Indexes
@@ -183,7 +179,7 @@ class TestLogCorrelation:
 
     def test_text_formatter_includes_run_id(self):
         """Test text format includes run=<id>."""
-        from src import setup_logging, current_run_id
+        from src import current_run_id, setup_logging
 
         token = current_run_id.set("99")
         try:
@@ -201,7 +197,7 @@ class TestLogCorrelation:
 
     def test_json_formatter_includes_run_id(self):
         """Test JSON format includes run_id key."""
-        from src import setup_logging, current_run_id
+        from src import current_run_id, setup_logging
 
         token = current_run_id.set("77")
         try:
@@ -221,8 +217,6 @@ class TestLogCorrelation:
     def test_run_review_sets_and_clears_run_id(self):
         """Test that run_review sets and then clears the run ID context."""
         from src import current_run_id
-
-        captured_run_ids = []
 
         @patch("src.main.get_notifier")
         @patch("src.main.get_llm")
@@ -276,15 +270,19 @@ class TestGitRetries:
 
     def test_push_retries_on_transient_error(self):
         """Test push_branch retries on GitCommandError."""
-        from git import GitCommandError
-        from src.git.repo_manager import RepoManager, RepoInfo
+        from git.remote import PushInfo
 
+        from git import GitCommandError
+        from src.git.repo_manager import RepoInfo, RepoManager
         mock_origin = Mock()
-        # Fail twice, succeed on third
+        # Fail twice, succeed on third (with valid push info)
+        mock_push_info = Mock(spec=PushInfo)
+        mock_push_info.flags = 0  # No error flags
+        mock_push_info.ERROR = PushInfo.ERROR
         mock_origin.push.side_effect = [
             GitCommandError("push", "network error"),
             GitCommandError("push", "network error"),
-            None,
+            [mock_push_info],
         ]
         mock_repo = Mock()
         mock_repo.remotes.origin = mock_origin
@@ -308,7 +306,7 @@ class TestGitRetries:
     def test_push_fails_after_max_retries(self):
         """Test push_branch returns False after exhausting retries."""
         from git import GitCommandError
-        from src.git.repo_manager import RepoManager, RepoInfo
+        from src.git.repo_manager import RepoInfo, RepoManager
 
         mock_origin = Mock()
         mock_origin.push.side_effect = GitCommandError("push", "network error")
@@ -333,10 +331,8 @@ class TestGitRetries:
 
     def test_clone_retries_on_transient_error(self):
         """Test _clone_repo retries on GitCommandError."""
-        from git import GitCommandError, Repo
+        from git import GitCommandError
         from src.git.repo_manager import RepoManager
-
-        mock_repo = Mock()
 
         manager = RepoManager(
             github=Mock(), rate_limiter=Mock(),
@@ -424,6 +420,7 @@ class TestNotificationRetry:
         # Set up latest run
         mock_run = Mock()
         mock_run.id = 1
+        mock_run.status = "completed"
         mock_run.started_at = datetime.utcnow()  # naive UTC, matching DB convention
         mock_history.return_value.get_latest_run.return_value = mock_run
         mock_history.return_value.build_report.return_value = Mock()
@@ -434,9 +431,9 @@ class TestNotificationRetry:
         mock_get_notifier.return_value.send_report.side_effect = [fail_result, success_result]
 
         agent = LucidPulls(settings)
-
-        with patch("src.main.time.sleep"):
-            agent.send_report()
+        agent._shutdown_requested = Mock()
+        agent._shutdown_requested.wait.return_value = False  # Not interrupted
+        agent.send_report()
 
         assert mock_get_notifier.return_value.send_report.call_count == 2
 
@@ -476,6 +473,7 @@ class TestNotificationRetry:
 
         mock_run = Mock()
         mock_run.id = 1
+        mock_run.status = "completed"
         mock_run.started_at = datetime.utcnow()  # naive UTC, matching DB convention
         mock_history.return_value.get_latest_run.return_value = mock_run
         mock_history.return_value.build_report.return_value = Mock()
@@ -484,8 +482,8 @@ class TestNotificationRetry:
         mock_get_notifier.return_value.send_report.return_value = fail_result
 
         agent = LucidPulls(settings)
-
-        with patch("src.main.time.sleep"):
-            agent.send_report()
+        agent._shutdown_requested = Mock()
+        agent._shutdown_requested.wait.return_value = False  # Not interrupted
+        agent.send_report()
 
         assert mock_get_notifier.return_value.send_report.call_count == 3

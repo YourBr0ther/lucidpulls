@@ -2,7 +2,6 @@
 
 import logging
 from dataclasses import dataclass
-from typing import Optional
 
 from src.llm.base import BaseLLM
 from src.models import GithubIssue
@@ -22,7 +21,7 @@ class IssueScore:
 class IssueAnalyzer:
     """Analyzes and prioritizes GitHub issues."""
 
-    def __init__(self, llm: Optional[BaseLLM] = None):
+    def __init__(self, llm: BaseLLM | None = None):
         """Initialize issue analyzer.
 
         Args:
@@ -64,7 +63,7 @@ class IssueAnalyzer:
         score = 0.0
         reasons = []
 
-        labels = [l.lower() for l in issue.get("labels", [])]
+        labels = [label.lower() for label in issue.get("labels", [])]
 
         # Label-based scoring
         if "bug" in labels:
@@ -129,7 +128,7 @@ class IssueAnalyzer:
 
         for issue in issues:
             # Skip issues that are likely not actionable
-            labels = [l.lower() for l in issue.get("labels", [])]
+            labels = [label.lower() for label in issue.get("labels", [])]
 
             # Skip feature requests, questions, etc.
             skip_labels = [

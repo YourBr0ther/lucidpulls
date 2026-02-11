@@ -1,11 +1,10 @@
 """Tests for utility functions."""
 
 import time
-from unittest.mock import patch
 
 import pytest
 
-from src.utils import retry, sanitize_branch_name, parse_time_string
+from src.utils import parse_time_string, retry, sanitize_branch_name
 
 
 class TestRetryDecorator:

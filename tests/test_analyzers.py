@@ -10,12 +10,6 @@ import pytest
 from src.analyzers.base import (
     AnalysisResult,
     FixSuggestion,
-    SCORE_ENTRY_POINT,
-    SCORE_IMPORTANT_NAME,
-    SCORE_SOURCE_DIR,
-    SCORE_LOW_PRIORITY_DIR,
-    SCORE_TEST_FILE,
-    SCORE_INIT_FILE,
 )
 from src.analyzers.code_analyzer import CodeAnalyzer, LLMFixResponse
 from src.analyzers.issue_analyzer import IssueAnalyzer

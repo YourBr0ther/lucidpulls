@@ -4,7 +4,6 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from src.models import GithubIssue
 
@@ -63,7 +62,7 @@ class FixSuggestion:
     pr_title: str
     pr_body: str
     confidence: str  # high, medium, low
-    related_issue: Optional[int] = None
+    related_issue: int | None = None
 
     @property
     def is_high_confidence(self) -> bool:
@@ -77,12 +76,12 @@ class AnalysisResult:
 
     repo_name: str
     found_fix: bool
-    fix: Optional[FixSuggestion] = None
-    error: Optional[str] = None
+    fix: FixSuggestion | None = None
+    error: str | None = None
     files_analyzed: int = 0
     issues_reviewed: int = 0
     analysis_time_seconds: float = 0.0
-    llm_tokens_used: Optional[int] = None
+    llm_tokens_used: int | None = None
 
     @property
     def success(self) -> bool:
@@ -95,7 +94,7 @@ class TestResult:
     """Result of running a repository's test suite."""
 
     status: str  # passed, failed, timeout, skipped
-    detail: Optional[str] = None
+    detail: str | None = None
 
     @property
     def passed(self) -> bool:
@@ -116,7 +115,7 @@ class BaseAnalyzer(ABC):
         self,
         repo_path: Path,
         repo_name: str,
-        issues: Optional[list[GithubIssue]] = None,
+        issues: list[GithubIssue] | None = None,
     ) -> AnalysisResult:
         """Analyze a repository for potential fixes.
 
@@ -199,7 +198,7 @@ class BaseAnalyzer(ABC):
     def _get_code_files(
         self,
         repo_path: Path,
-        extensions: Optional[list[str]] = None,
+        extensions: list[str] | None = None,
         max_files: int = MAX_FILES,
         max_file_size: int = MAX_FILE_SIZE,
     ) -> list[tuple[Path, str]]:

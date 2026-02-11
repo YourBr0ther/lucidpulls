@@ -1,6 +1,6 @@
 """Code and issue analyzers."""
 
-from src.analyzers.base import BaseAnalyzer, AnalysisResult, FixSuggestion, TestResult
+from src.analyzers.base import AnalysisResult, BaseAnalyzer, FixSuggestion, TestResult
 from src.analyzers.code_analyzer import CodeAnalyzer
 from src.analyzers.issue_analyzer import IssueAnalyzer
 

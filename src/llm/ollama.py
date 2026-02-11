@@ -1,11 +1,10 @@
 """Ollama LLM client implementation."""
 
 import logging
-from typing import Optional
 
 import httpx
 
-from src.llm.base import BaseHTTPLLM, LLMResponse, DEFAULT_TIMEOUT
+from src.llm.base import DEFAULT_TIMEOUT, BaseHTTPLLM, LLMResponse
 from src.utils import retry
 
 logger = logging.getLogger("lucidpulls.llm.ollama")
@@ -25,7 +24,7 @@ class OllamaLLM(BaseHTTPLLM):
         self.host = host.rstrip("/")
         self.model = model
 
-    def generate(self, prompt: str, system_prompt: Optional[str] = None) -> LLMResponse:
+    def generate(self, prompt: str, system_prompt: str | None = None) -> LLMResponse:
         """Generate a response using Ollama.
 
         Args:
@@ -42,7 +41,7 @@ class OllamaLLM(BaseHTTPLLM):
             return LLMResponse(content="", model=self.model)
 
     @retry(max_attempts=3, delay=2.0, backoff=2.0, exceptions=(httpx.HTTPStatusError, httpx.RequestError))
-    def _generate_with_retry(self, prompt: str, system_prompt: Optional[str] = None) -> LLMResponse:
+    def _generate_with_retry(self, prompt: str, system_prompt: str | None = None) -> LLMResponse:
         """Internal generate method with retry logic."""
         url = f"{self.host}/api/generate"
 
@@ -58,7 +57,10 @@ class OllamaLLM(BaseHTTPLLM):
         logger.debug(f"Sending request to Ollama: model={self.model}")
 
         response = self._client.post(url, json=payload)
-        response.raise_for_status()
+        # Fail fast on non-retryable 4xx (bad credentials, bad request, etc.)
+        if 400 <= response.status_code < 500 and response.status_code != 429:
+            raise ValueError(f"Ollama HTTP {response.status_code}: {response.text[:200]}")
+        response.raise_for_status()  # 429/5xx — retried by decorator
 
         try:
             data = response.json()

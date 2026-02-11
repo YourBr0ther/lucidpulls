@@ -5,14 +5,12 @@ import os
 import shlex
 import shutil
 import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
-from git import Repo, GitCommandError
 from github import Github, GithubException
 
+from git import GitCommandError, Repo
 from src.git.rate_limiter import GitHubRateLimiter
 from src.utils import retry
 
@@ -40,7 +38,7 @@ class RepoManager:
         rate_limiter: GitHubRateLimiter,
         username: str,
         email: str,
-        ssh_key_path: Optional[str] = None,
+        ssh_key_path: str | None = None,
         clone_dir: str = "/tmp/lucidpulls/repos",
         max_clone_disk_mb: int = 0,
     ):
@@ -180,7 +178,7 @@ class RepoManager:
             if not any(owner_dir.iterdir()):
                 owner_dir.rmdir()
 
-    def clone_or_pull(self, repo_full_name: str) -> Optional[RepoInfo]:
+    def clone_or_pull(self, repo_full_name: str) -> RepoInfo | None:
         """Clone a repository or pull latest changes if already cloned.
 
         Args:
@@ -248,7 +246,7 @@ class RepoManager:
         local_path.parent.mkdir(parents=True, exist_ok=True)
         return Repo.clone_from(ssh_url, local_path, depth=1)
 
-    def _clone_repo(self, ssh_url: str, local_path: Path) -> Optional[Repo]:
+    def _clone_repo(self, ssh_url: str, local_path: Path) -> Repo | None:
         """Clone a repository using shallow clone.
 
         Args:
@@ -266,7 +264,7 @@ class RepoManager:
             logger.error(f"Clone failed after retries: {e}")
             return None
 
-    def _pull_repo(self, local_path: Path, default_branch: str) -> Optional[Repo]:
+    def _pull_repo(self, local_path: Path, default_branch: str) -> Repo | None:
         """Pull latest changes for a repository.
 
         Args:
@@ -376,7 +374,14 @@ class RepoManager:
     @retry(max_attempts=3, delay=2.0, backoff=2.0, exceptions=(GitCommandError,))
     def _push_with_retry(origin, branch_name: str) -> None:
         """Push with retry on transient network errors."""
-        origin.push(branch_name, set_upstream=True)
+        push_infos = origin.push(branch_name, set_upstream=True)
+        for info in push_infos:
+            if info.flags & info.ERROR:
+                raise GitCommandError(
+                    f"push {branch_name}",
+                    128,
+                    stderr=info.summary or "Push rejected by remote",
+                )
 
     def push_branch(self, repo_info: RepoInfo, branch_name: str) -> bool:
         """Push a branch to the remote.
